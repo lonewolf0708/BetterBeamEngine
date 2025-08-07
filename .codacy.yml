@@ -1,0 +1,25 @@
+exclude_paths:
+  - '**/test/**'
+  - '**/tests/**'
+  - '**/node_modules/**'
+  - '**/bower_components/**'
+  - '**/vendor/**'
+  - '**/*.min.*'
+  - '**/*.bundle.*'
+  - '**/dist/**'
+  - '**/build/**'
+  - '**/.git/**'
+  - '**/.github/**'
+  - '**/.idea/**'
+  - '**/.vscode/**'
+
+tools:
+  - eslint
+  - jshint
+  - csslint
+  - markdownlint
+  - shellcheck
+
+ignore:
+  - '**/*.min.js'
+  - '**/vendor/*.js'
