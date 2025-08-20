@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 0
           
       - name: Run Codacy Analysis
-        uses: codacy/codacy-analysis-cli-action@v4.0.0
+        uses: codacy/codacy-analysis-cli-action@latest
         with:
           # Your project token can be found in your project settings on Codacy.
           # You can also use a GitHub secret (recommended) with your Codacy API token.
