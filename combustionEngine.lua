@@ -360,8 +360,8 @@ local function checkHydroLocking(device, dt)
   damageTracker.setDamage("engine", "engineIsHydrolocking", isFlooding)
 
   -- Calculate flooding/drying rates (now in 1% increments)
-  local floodRate = 0.04  -- 2% per second when fully submerged and at max RPM
-  local dryRate = -0.06   -- 3% per second when drying (slower than flooding)
+  local floodRate = 0.04  -- 4% per second when fully submerged and at max RPM
+  local dryRate = -0.06   -- 6% per second when drying (slower than flooding)
   
   -- Scale rate by engine RPM (0% at 0 RPM, 100% at max RPM)
   local rpmFactor = min(1, abs(device.outputAV1) / device.maxAV)
