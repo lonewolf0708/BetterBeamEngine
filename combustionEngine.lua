@@ -491,7 +491,7 @@ local function updateGFX(device, dt)
   device.outputRPM = device.outputAV1 * avToRPM
 
   device.starterThrottleKillTimer = max(device.starterThrottleKillTimer - dt, 0)
-  device.lastStarterThrottleKillTimerEnd = max((device.lastStarterThrottleKillTimerEnd or 0) - os.clock()*1.5, 0)
+  device.lastStarterThrottleKillTimerEnd = max((device.lastStarterThrottleKillTimerEnd or 0) - dt*1.5, 0)
 
   if device.starterEngagedCoef > 0 then
     -- if device.starterBattery then
