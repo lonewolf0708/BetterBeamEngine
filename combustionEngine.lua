@@ -1053,9 +1053,11 @@ local function updateTorque(device, dt)
   local throttleMap = smoothmin(max(throttle + throttle * device.maxPowerThrottleMap / (torque * device.forcedInductionCoef * engineAV + 1e-30) * (1 - throttle), 0), 1, (1 - throttle) * 0.8) --0.8 can be tweaked to adjust the peakiness of the throttlemap adjusted torque curve
 
   local ignitionCut = device.ignitionCutTime > 0
-  torque = min((torque * device.forcedInductionCoef * throttleMap) + device.nitrousOxideTorque) * device.outputTorqueState * (ignitionCut and 0 or 1) * device.slowIgnitionErrorCoef * device.fastIgnitionErrorCoef * device.starterIgnitionErrorCoef
-  -- torque = min(torque, device.maxTorqueLimit)  --limit output torque to a specified max, math.huge by default
-
+  torque = (torque * device.forcedInductionCoef * throttleMap) + device.nitrousOxideTorque
+  torque = torque * device.outputTorqueState * (ignitionCut and 0 or 1) * device.slowIgnitionErrorCoef * device.fastIgnitionErrorCoef * device.starterIgnitionErrorCoef
+  if device.maxTorqueLimit and device.maxTorqueLimit < math.huge then
+    torque = min(torque, device.maxTorqueLimit)  -- Limit output torque to specified max
+  end
   local lastInstantEngineLoad = device.instantEngineLoad
   local instantLoad = min(max(torque / ((maxCurrentTorque + 1e-30) * device.outputTorqueState * device.forcedInductionCoef), 0), 1)
   device.instantEngineLoad = instantLoad
@@ -2906,7 +2908,7 @@ local function new(jbeamData)
     throttleFactor = 1,
     throttle = 0,
     requestedThrottle = 0,
-    maxTorqueLimit = math.huge,
+    maxTorqueLimit = jbeamData.maxTorqueLimit or math.huge,  -- Allow override from JBeam, default to no limit
     dynamicFriction = jbeamData.dynamicFriction or 0,
     idleRPM = jbeamData.idleRPM,
     idleAV = jbeamData.idleRPM * rpmToAV,
