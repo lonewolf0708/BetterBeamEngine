@@ -360,8 +360,8 @@ local function checkHydroLocking(device, dt)
   damageTracker.setDamage("engine", "engineIsHydrolocking", isFlooding)
 
   -- Calculate flooding/drying rates (now in 1% increments)
-  local floodRate = 0.04  -- 4% per second when fully submerged and at max RPM
-  local dryRate = -0.06   -- 6% per second when drying (slower than flooding)
+  local floodRate = 0.04  -- 2% per second when fully submerged and at max RPM
+  local dryRate = -0.06   -- 3% per second when drying (slower than flooding)
   
   -- Scale rate by engine RPM (0% at 0 RPM, 100% at max RPM)
   local rpmFactor = min(1, abs(device.outputAV1) / device.maxAV)
@@ -491,7 +491,7 @@ local function updateGFX(device, dt)
   device.outputRPM = device.outputAV1 * avToRPM
 
   device.starterThrottleKillTimer = max(device.starterThrottleKillTimer - dt, 0)
-  device.lastStarterThrottleKillTimerEnd = max((device.lastStarterThrottleKillTimerEnd or 0) - dt*1.5, 0)
+  device.lastStarterThrottleKillTimerEnd = max((device.lastStarterThrottleKillTimerEnd or 0) - os.clock()*1.5, 0)
 
   if device.starterEngagedCoef > 0 then
     -- if device.starterBattery then
@@ -563,7 +563,7 @@ local function updateGFX(device, dt)
   local currentRPM = device.outputAV1 * avToRPM
   
   -- Update battery state
-  local dt = 1/60  -- Fixed timestep for battery updates
+  local dt = dt or device.batteryUpdateFrequency or 1/60  -- Fixed timestep for battery updates
   
   -- Local function to initialize battery parameters
   local function initBattery(device, jbeamData)
@@ -594,7 +594,7 @@ local function updateGFX(device, dt)
       device.batteryCharge = electrics.values.batteryCharge
     else
       -- Start with full charge by default
-      device.batteryCharge = 0.95
+      device.batteryCharge = 1.0
     end
   
     -- Log battery initialization
@@ -712,7 +712,7 @@ local function updateGFX(device, dt)
   
   -- Starter effect - when cranking, we want to see the brightness pulse with the engine
   -- This creates a flickering effect that gets faster as the engine speeds up
-  local pulseEffect = 2.0
+  local pulseEffect = 1.0
   if device.starterEngagedCoef > 0 then
     -- More noticeable pulsing during cranking
     local pulseFrequency = math.max(currentRPM * 0.05, 0.3)  -- Slower pulsing at low RPM
@@ -1096,18 +1096,18 @@ local function updateTorque(device, dt)
   
   -- Calculate base starter torque based on engine size, type, and starter power
   local baseStarterTorque
-  
-  -- Use device.starterTorque if explicitly set, otherwise use default values
-  if device.starterTorque then
+ 
     -- Check if this is a diesel engine based on fuel type
     local isDiesel = (device.requiredEnergyType == "diesel") or 
                      (device.engineType and (device.engineType == "diesel" or device.engineType == "dieselElectric"))
-    
+
+    -- Use device.starterTorque if explicitly set, otherwise use default values
+    if device.starterTorque then
     -- Original torque values that were working
     if isDiesel then
-      baseStarterTorque = device.starterTorque or 180  -- Original value for diesel engines is 180
+      baseStarterTorque = --[[device.starterTorque or]] 180  -- Original value for diesel engines is 180
     else
-      baseStarterTorque = device.starterTorque or 210  -- Original value for gasoline engines is 110
+      baseStarterTorque = --[[device.starterTorque or]] 210  -- Original value for gasoline engines is 110
     end
   end
   
@@ -1388,10 +1388,10 @@ local function updateTorque(device, dt)
   --   Min torque at high RPM: 0.016 * invStarterMaxAV
   if isDiesel then
     -- Diesel engines - high compression requires more torque
-    local baseTorque = device.starterTorque -- * 1.2 or device.starterMaxAV * 2.95  -- Increased base torque for diesel
+    local baseTorque = device.starterTorque * 0.2 or device.starterMaxAV * 2.95  -- Increased base torque for diesel
     
     -- More aggressive battery voltage scaling - diesels need more power
-    local voltageEffect = math.pow(batteryVoltageFactor, 2.8)  -- More sensitive to voltage drops
+    local voltageEffect = math.pow(batteryVoltageFactor, 0.5)  -- More sensitive to voltage drops
     baseTorque = baseTorque * (0.05 + 0.95 * voltageEffect)
     
     -- Temperature effect - much harder to start when cold
@@ -1404,13 +1404,13 @@ local function updateTorque(device, dt)
     maxTorqueAtZeroRPM = baseTorque * (1 + (combinedOscFactor * 0.2 * compressionEffect))
     
     -- Minimum torque at high RPM - ensure engine keeps spinning
-    minTorqueAtHighRPM = device.invStarterMaxAV * 0.128 * voltageEffect * tempEffect
+    minTorqueAtHighRPM = device.invStarterMaxAV * 0.028 * voltageEffect * tempEffect
   else
     -- Gasoline engines - less compression, easier starting
-    local baseTorque = device.starterTorque * 1.45 or device.starterMaxAV * 18.26  -- Increased base torque for better cranking
+    local baseTorque = device.starterTorque -- * 1.45 or device.starterMaxAV * 18.26  -- Increased base torque for better cranking
     
     -- Battery voltage scaling
-    local voltageEffect = math.pow(batteryVoltageFactor, 5.1)
+    local voltageEffect = math.pow(batteryVoltageFactor, 1.1)
     baseTorque = baseTorque * (0.62 + 0.95 * voltageEffect)
     
     -- Temperature effect - still significant but less than diesel
@@ -1467,7 +1467,6 @@ local function updateTorque(device, dt)
     local cycleAdvance = (math.abs(device.outputAV1) * dt) / radiansPerCycle * cylinderCount
     
     -- Update cylinder states based on cycle position
-    local cylinderCount = cylinderCount or 8
     local cyclePosPerCylinder = 2 * math.pi / cylinderCount
     local currentCylinder = math.floor((device.cyclePosition % (2 * math.pi)) / cyclePosPerCylinder) + 1
     
@@ -2448,7 +2447,7 @@ local function reset(device, jbeamData)
   device.throttle = 0
   device.requestedThrottle = 0
   device.dynamicFriction = jbeamData.dynamicFriction or 0
-  device.maxTorqueLimit = math.huge
+  device.maxTorqueLimit = jbeamData.maxTorqueLimit or device.maxTorqueLimit or math.huge
 
   device.idleAVOverwrite = 0
   device.idleAVReadError = 0
