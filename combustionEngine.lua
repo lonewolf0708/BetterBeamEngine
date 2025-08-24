@@ -2,7 +2,7 @@
 -- If a copy of the bCDDL was not distributed with this
 -- file, You can obtain one at http://beamng.com/bCDDL-1.1.txt
 
--- Module-level initialization
+-- Prints a short banner to stdout when the module is loaded, showing the script path and current timestamp.
 local function onModuleLoad()
   print("\n")
   print("========================================")
@@ -36,6 +36,22 @@ local torqueToPower = 0.0001404345295653085
 local psToWatt = 735.499
 local hydrolockThreshold = 1.9
 
+-- Builds torque and power curves for the given engine device, including variants for nitrous, turbo, supercharger and their combinations.
+-- @param device The engine device (as produced by M.new) whose base torque curve and modifier submodules (turbocharger, supercharger, nitrousOxideInjection) will be used.
+-- @return A table with:
+--   maxRPM (number) — the engine's max RPM used for curve generation;
+--   curves (array) — list of curve entries; each entry contains `torque` (table: indexed by RPM+1 -> torque), `power` (table: RPM+1 -> power), `name` (string), `priority` (number), `dash` (optional line-style) and `width` (line width);
+--   maxTorque (number) — highest torque value across all generated curves;
+--   maxPower (number) — highest power value across all generated curves;
+--   maxTorqueRPM (number) — RPM index (stored as k+1) where maxTorque occurs;
+--   maxPowerRPM (number) — RPM index (stored as k+1) where maxPower occurs;
+--   finalCurveName (number) — placeholder/index of the final curve (set to 1 in this implementation);
+--   deviceName (string) — device.name;
+--   vehicleID (number) — id of the associated object (obj:getId()).
+-- Notes:
+--   - The function subtracts friction (static and dynamic, accounting for wear/damage) from base torque before computing power.
+--   - Modifier curves are generated only if the corresponding submodule reports `isExisting`.
+--   - Returned torque/power tables are keyed by (rpm_index + 1) to match the module's curve indexing convention.
 local function getTorqueData(device)
   local curves = {}
   local curveCounter = 1
@@ -275,6 +291,9 @@ local function scaleOutputTorque(device, state, maxReduction)
   damageTracker.setDamage("engine", "engineReducedTorque", device.outputTorqueState < 1)
 end
 
+-- Disable the engine: cut output torque, mark disabled, stop starter sounds, and record damage.
+-- This sets device.outputTorqueState to 0, device.isDisabled to true and clears starter engagement;
+-- it also stops any active starter sound effects and records the "engineDisabled" damage state.
 local function disable(device)
   device.outputTorqueState = 0
   device.isDisabled = true
@@ -290,6 +309,9 @@ local function disable(device)
   damageTracker.setDamage("engine", "engineDisabled", true)
 end
 
+-- Re-enable the engine after being disabled.
+-- Ensures the engine can produce torque, re-enables starter control, clears active misfire state/timers,
+-- and clears the recorded "engineDisabled" damage flag.
 local function enable(device)
   device.outputTorqueState = 1
   device.isDisabled = false
@@ -299,6 +321,11 @@ local function enable(device)
   damageTracker.setDamage("engine", "engineDisabled", false)
 end
 
+-- Locks the engine permanently due to hydrolock/serious failure, disabling outputs and starter.
+-- This sets the device into a broken/disabled state, zeros torque and angular-velocity outputs,
+-- disables the starter, stops any active starter sounds, and records powertrain/engine damage.
+-- @param device The engine device instance to lock up; its state fields (outputTorqueState, outputAVState,
+--               isDisabled, isBroken, starterDisabled) will be modified and starter sounds stopped.
 local function lockUp(device)
   device.outputTorqueState = 0
   device.outputAVState = 0
@@ -316,6 +343,15 @@ local function lockUp(device)
   damageTracker.setDamage("engine", "engineLockedUp", true)
 end
 
+-- Update engine and forced-induction sounds to match current RPM and load.
+-- Computes smoothed RPM and engine-load, scales load for engine and exhaust channels,
+-- converts to fundamental FMOD frequencies, and updates the configured engine/exhaust
+-- sound instances. Also propagates sound updates to the turbocharger and supercharger.
+-- @param device Engine device table. Must provide soundRPMSmoother, soundLoadSmoother,
+--        outputAV1, torqueCurve, intakeAirDensityCoef, idleTorque, engineVolumeCoef,
+--        soundMinLoadMix/soundMaxLoadMix, optional exhaust mix overrides, soundConfiguration,
+--        and engineSoundID / engineSoundIDExhaust as applicable.
+-- @param dt Delta time (seconds) for the smoothing updates.
 local function updateSounds(device, dt)
   local rpm = device.soundRPMSmoother:get(abs(device.outputAV1 * avToRPM), dt)
   local maxCurrentTorque = (device.torqueCurve[floor(rpm)] or 1) * device.intakeAirDensityCoef
@@ -341,6 +377,23 @@ local function updateSounds(device, dt)
   device.supercharger.updateSounds()
 end
 
+-- Update engine flood/ hydrolock state based on immersion and RPM.
+-- 
+-- Checks whether the engine's water-damage nodes are submerged and, if flooding is possible,
+-- increments or decrements device.floodLevel over time (dt, in seconds). Flooding and drying
+-- rates are scaled by engine RPM (0 at 0 RPM, 1 at device.maxAV). When floodLevel exceeds
+-- the module-level hydrolockThreshold the function marks the engine as hydrolocked, calls
+-- device:lockup(), records the damage state, and emits a GUI message. The function also
+-- updates a rounded flood-percentage (0–100) on change and emits appropriate flooding/drying
+-- UI messages; it clears the hydrolocked damage when the percentage reaches 0.
+-- 
+-- Parameters:
+-- @param device The engine device whose flood state is updated.
+-- @param dt Time step in seconds used to advance the flood/dry integration.
+-- 
+-- Side effects:
+-- - Mutates device.floodLevel and device.prevFloodPercent.
+-- - May call device:lockup(), set damage states via damageTracker, and post GUI messages via guihooks.
 local function checkHydroLocking(device, dt)
   -- Check if already hydrolocked
   if device.floodLevel > hydrolockThreshold then
@@ -407,6 +460,9 @@ local function checkHydroLocking(device, dt)
   end
 end
 
+-- Update device.energyStorageRatios for each registered energy storage matching the device's required energy type.
+-- For each matching storage, sets the ratio to 1 / device.storageWithEnergyCounter when that storage currently has storedEnergy > 0, otherwise sets it to 0.
+-- Mutates device.energyStorageRatios in-place; ignores storages that are not found or whose energyType does not match.
 local function updateEnergyStorageRatios(device)
   for _, s in pairs(device.registeredEnergyStorages) do
     local storage = energyStorage.getStorage(s)
@@ -458,6 +514,10 @@ local function updateFuelUsage(device)
   device.remainingFuelRatio = remainingFuelRatio / device.storageWithEnergyCounter
 end
 
+-- Update engine graphics, audio, battery and per-frame visual/auxiliary state.
+-- Performs non-physics, per-frame updates: manages stall/starter buzzers and starter sounds, updates fuel usage and output RPM, advances starter-related timers and ignition error timers, computes and updates the vehicle battery model (charge, voltage, brightness, electrical load), updates ignition error/coefficient smoothing, handles shut-off sound triggering, stall detection, rev/torque over-limit damage checks (may trigger lockup and UI messages), updates sound/exhaust parameters (compression brake, antilag), pushes fuel/exhaust delay lines, calls submodule GFX updates (turbo, supercharger, nitrous, thermals), computes intake air density, runs hydrolock checks, and clears per-frame fuel/energy accounting fields.
+-- @param device The combustion engine device table to update (mutated in-place).
+-- @param dt Delta time in seconds for this update step.
 local function updateGFX(device, dt)
 
   if device.stallBuzzerSoundID then -- Check if the source was created successfully at init
@@ -1021,7 +1081,16 @@ local function updateFixedStep(device, dt)
   device.supercharger.updateFixedStep(dt)
 end
 
---velocity update is always nopped for engines
+-- Updates the engine's torque, rotational speed (AV), and related internal state for a single physics timestep.
+-- This computes combustion/starter torque, friction, pumping/compression losses, battery/starter effects, per-cylinder
+-- fuel/ignition/misfire behavior, flood handling, and updates engine output AV/torque, loads, and derived diagnostics.
+-- It also advances the engine cycle position, updates ignition/misfire timers, adjusts battery charge/voltage while
+-- cranking or charging, and runs the periodic fixed-step update when its timer elapses.
+-- @param device The engine device table whose fields are read and written (torque curves, thermals, battery state,
+--               cylinders, starter state, output ports, smoothing objects, and many diagnostics).
+-- @param dt Time step in seconds for this update.
+-- Note: This function has no return value; it mutates the provided device and sends side-effects (state updates,
+-- periodic fixed-step invocation, and an inertial torque couple applied via the global simulation object).
 
 local function updateTorque(device, dt)
   local isFlooded = device.floodLevel > 0.5  -- Adjust threshold as needed
@@ -2077,6 +2146,26 @@ local function validate(device)
   return true
 end
 
+-- Activate the starter sequence for the given engine device.
+-- 
+-- Updates starter-related coefficients and timers, adjusts ignition behavior based on
+-- engine block temperature and fuel availability, and triggers enable/disable and damage
+-- markers as appropriate. Also starts/stops starter sound effects and records the
+-- starter as engaged (sets device.starterEngagedCoef = 1).
+--
+-- Side effects:
+-- - Modifies device.ignitionCoef, device.starterThrottleKillTimer, device.starterIgnitionErrorTimer,
+--   device.starterIgnitionErrorChance, device.starterIgnitionErrorCoef, device.starterThrottleKillTimerStart,
+--   device.starterEngagedCoef and device.engineMiscSounds.loopTimer.
+-- - May call enable(device) or disable(device) depending on temperature/fuel.
+-- - May set or clear damageTracker flags for engineDisabled.
+-- - Plays/cuts starter SFX (starterSoundEngine, optional starterSoundExhaust).
+--
+-- Behavior notes:
+-- - Uses a larger cold-start time coefficient for diesel devices than for gasoline.
+-- - If engineBlockTemperature is extremely low (<= -270°C) the engine is disabled and a GUI message is emitted.
+-- - For cold but not extreme temperatures, starter timers and ignition error parameters are scaled based on temperature.
+-- - If temperature is warm (>= 16°C) related slow-ignition and idle-read error values are cleared.
 local function activateStarter(device)
   device.ignitionCoef = device.ignitionCoef * 1.5
   if device.starterEngagedCoef ~= 1 then
@@ -2133,6 +2222,19 @@ local function cutIgnition(device, time)
   device.ignitionCutTime = time
 end
 
+-- Deactivates the starter after a crank attempt and applies the appropriate throttle/ignition state.
+-- If the engine reached running speed (device.outputAV1 > device.starterMaxAV * 1.1) the starter is treated as
+-- having successfully started the engine; otherwise it is treated as a failed start.
+--
+-- Side effects:
+-- - Updates device.lastStarterThrottleKillTimerEnd and clears device.starterThrottleKillTimer.
+-- - Sets device.starterEngagedCoef to 0 and device.starterIgnitionErrorChance to 0.
+-- - Sets device.starterThrottleKillCoef to 1 when the engine started, or 0 when it did not; writes this value
+--   into device.starterThrottleKillCoefSmoother.
+-- - Stops starter SFX on a successful start (stopSFX) or abruptly cuts them on failure (cutSFX). Also handles
+--   exhaust starter sound if present.
+--
+-- @param device The engine device table whose starter state and sounds are to be deactivated.
 local function deactivateStarter(device)
   --if we happen to crank barely long enough, then do allow the engine to start up, otherwise, we stay with the throttle kill coef as is (usually at 0)
   local didStart = false
@@ -2162,6 +2264,11 @@ local function deactivateStarter(device)
   end
 end
 
+-- Sets the engine ignition state.
+-- When `value` > 0 the ignition coefficient is set to 1 (on); otherwise it is set to 0 (off).
+-- If ignition is turned off (`value == 0`), the starter throttle kill timer and starter engaged coefficient are cleared.
+-- Turning ignition off will also request the engine shut-off sound if the current output AV exceeds `starterMaxAV * 1.1`.
+-- @param value Numeric ignition input; >0 turns ignition on, 0 turns it off.
 local function setIgnition(device, value)
   device.ignitionCoef = value > 0 and 1 or 0
   if value == 0 then
@@ -2366,6 +2473,12 @@ local function setExhaustGainMufflingOffsetRevLimiter(device, mufflingOffset, ga
   device:setEngineSoundParameterList(device.engineSoundIDExhaust, currentConfig.params, "exhaust")
 end
 
+-- Reset and configure engine and subsystem sounds according to the provided JBEAM sound configuration.
+-- If a new sound config is present, this resets RPM/load smoothers, disables legacy sounds, and updates
+-- engine/exhaust sound parameters (nodes, gain, muffling). Logs an error if the named sound config is missing.
+-- Always invokes resetSounds on turbocharger, supercharger, nitrous injection, and thermals to reinitialize their audio state.
+-- @param device The engine device instance whose sound state will be reset and reconfigured.
+-- @param jbeamData Table of JBEAM configuration data; expects keys referencing sound/turbo/supercharger/nitrous configs.
 local function resetSounds(device, jbeamData)
   if not sounds.usesOldCustomSounds then
     if jbeamData.soundConfig then
@@ -2622,6 +2735,20 @@ local function initBattery(device, jbeamData)
                     device.batterySystemVoltage, device.batteryCapacity))
 end
 
+-- Initialize and configure engine and exhaust sound sources and related audio parameters on the device.
+--
+-- This function creates/startup SFX sources (starter, shut-off, stall buzzer, intake/exhaust blended sounds),
+-- applies volumes and EQ/muffling parameters, initializes engine/exhaust sound parameter lists and smoothers,
+-- and delegates sound initialization to turbocharger, supercharger, nitrous, and thermals subsystems.
+-- It will also switch the device to use the new sound update callback when applicable and log missing configs.
+--
+-- @param jbeamData Table of JBEAM-provided sound configuration and sample keys used by this engine:
+--        expected keys include (but are not limited to) starterSample, starterSampleExhaust,
+--        shutOffSampleEngine, shutOffSampleExhaust, starterVolume*, shutOffVolume*,
+--        soundConfig, soundConfigExhaust, rpmSmootherInRate, rpmSmootherOutRate,
+--        loadSmootherInRate, loadSmootherOutRate, turbocharger, supercharger, nitrousOxideInjection.
+--        Missing or invalid soundConfig entries are logged; presence of soundConfig determines whether
+--        the new blended sound pipeline is initialized.
 local function initSounds(device, jbeamData)
   local exhaustEndNodes = device.thermals.exhaustEndNodes or {}
 
@@ -2865,6 +2992,18 @@ local function initSounds(device, jbeamData)
   device.thermals.initSounds(jbeamData)
 end
 
+-- Create and initialize a combustion engine device from JBeam data and return the device table.
+-- 
+-- The constructor builds a fully configured engine object ready for registration with the powertrain system:
+-- - Initializes battery/electrical defaults (auto-selects 12V/24V from fuel type unless overridden).
+-- - Configures inertial, starter, idle, ignition, rev-limiter and damage-related defaults.
+-- - Builds torque and compression-brake curves from provided torque tables and applies redline drop-off.
+-- - Initializes subsystems: thermals, turbocharger, supercharger and nitrous oxide injection (if defined).
+-- - Prepares output ports, torque reaction nodes, water-damage/flooding support, and energy storage bookkeeping.
+-- - Resets relevant damage tracker flags and selects update callbacks.
+-- 
+-- @param jbeamData Table of engine configuration values parsed from JBeam (examples: requiredEnergyType, torque, idleRPM, maxRPM, batterySystemVoltage, turbocharger, supercharger, nitrousOxideInjection, torqueCompressionBrake, revLimiter settings, etc.). Fields are read extensively; unspecified values use sensible defaults.
+-- @return device A table representing the initialized combustion engine device (contains state, subsystem objects, methods, and data structures used by the simulation).
 local function new(jbeamData)
   -- Create device table with basic battery parameters
   local isDiesel = (jbeamData.requiredEnergyType == "diesel") or (jbeamData.engineType == "diesel")
