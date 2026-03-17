@@ -24,7 +24,7 @@ M.outputPorts = {[1] = true} -- set dynamically
 M.deviceCategories = {engine = true}
 
 local delayLine = rerequire("delayLine")
-local carburetorModule = rerequire("lua/vehicle/powertrain/carburetor")
+-- local carburetorModule = rerequire("lua/vehicle/powertrain/carburetor")
 -- local chokeModule = rerequire("lua/vehicle/powertrain/choking")
 
 local max = math.max
