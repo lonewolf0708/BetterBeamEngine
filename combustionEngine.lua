@@ -1676,7 +1676,7 @@ local function updateTorque(device, dt)
 	local engagementFactor = 1.0
 	if device.starterEngageTimer and device.starterEngageTimer > 0 then
 		local engagementCurve = smoothstep(0, 0.7, 0.7 - device.starterEngageTimer)
-		engagementFactor = 0.6 + 1.7 * engagementCurve -- Start at 60% torque and ramp up
+		engagementFactor = 0.8 + 1.2 * engagementCurve -- Start at 80% torque and ramp up
 		device.starterEngageTimer = device.starterEngageTimer - dt
 	end
 
@@ -2351,14 +2351,15 @@ end
 
 			-- Phase 1: Struggle phase (extended duration)
 		elseif device.startingHesitationPhase == 1 then
-			local struggleDuration = 14.0 + math.random() * 0.8 -- Extended duration (was 2.0 - 2.4s)
+			local coldFactor = math.max(0, math.min(1, (20 - (engineTempC or 20)) / 40)) -- 0 at 20°C, 1 at -20°C
+			local struggleDuration = 3.0 + coldFactor * 3.0 + math.random() * 1.0 -- 3-4s warm, up to 7s very cold
 
 			-- Create a pulsing effect during struggle
 			local pulseFreq = math.random(1.0, 30.0) -- random frequency between 1 and 30 Hz
 			local pulse = (math.sin(device.startingHesitationTime * math.pi * 8 * pulseFreq) + 1) * 0.5 -- 0-1 pulse
 
 			-- Base hesitation effect (lower torque during struggle)
-			device.startingHesitationFactor = 0.5 + pulse * 0.4 -- 50-90% torque (was 70-100%)
+			device.startingHesitationFactor = 0.7 + pulse * 0.25 -- 70-95% torque
 			if hesitationDebug then
 				log(
 					"D",
@@ -2642,8 +2643,8 @@ end
 					* device.starterTorque
 
 				-- Apply the misfire torque with stronger oscillation
-				device.starterTorque = device.starterTorque + misfireTorque + oscillation
-				torque = torque + device.starterTorque + misfireTorque + oscillation
+				local effectiveMisfireTorque = misfireTorque + oscillation
+				torque = torque + device.starterTorque + effectiveMisfireTorque * 2
 				-- More aggressive flood level increase when cold
 				if engineTempC < 20 then -- Increased from 10 to 20°C threshold
 					local tempFactor = math.max(0, (20 - engineTempC) / 20) -- 0 at 20°C, 1.0 at 0°C
@@ -2962,7 +2963,7 @@ end
 	end
 
 	-- Balanced compression resistance with realistic temperature scaling (higher when cold)
-	local compressionStrength = 1.1 * (1 - rpmFactor * 0.3) * (2.0 - tempEffect)
+	local compressionStrength = 1.1 * (1 - rpmFactor * 0.3) * (1.5 - tempEffect * 0.5)
 	local powerStrength = 1.0 * (1 - rpmFactor * 0.1)
 
 	-- Calculate stroke effect with phase-specific timing
