@@ -1,0 +1,3 @@
+## 2025-05-15 - [Avoid high-frequency allocations in Lua]
+**Learning:** In Lua-based simulation environments like BeamNG, the garbage collector can become a bottleneck if table literals or closures are defined within high-frequency loops (e.g., `updateTorque` at 2000Hz or `updateGFX` at 60Hz). These allocations add significant pressure to the GC, leading to micro-stutters.
+**Action:** Always move static lookup tables and helper functions that don't depend on local closure state to the module scope or initialize them once during the object's creation. Rename shadowed variables (like `dt`) to prevent logic errors when refactoring high-frequency functions.
