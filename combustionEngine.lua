@@ -607,7 +607,7 @@ local function checkHydroLocking(device, dt)
 	-- Check for hydrolock condition
 	if device.floodLevel > hydrolockThreshold then
 		damageTracker.setDamage("engine", "engineHydrolocked", true)
-		device:lockup()
+		device:lockUp()
 		guihooks.message("vehicle.combustionEngine.engineHydrolocked", 4, "vehicle.damage.flood")
 		return
 	end
@@ -904,7 +904,6 @@ local function updateGFX(device, dt)
 	end
 
 	-- Update battery state
-	local dt = 1 / 60 -- Fixed timestep for battery updates
 
 	-- Local function to initialize battery parameters
 	local function initBattery(device, jbeamData)
@@ -1113,8 +1112,8 @@ local function updateGFX(device, dt)
 
 	if
 		device.shutOffSoundRequested
-		and device.outputAV1 < device.idleAV * 1.1
-		and device.outputAV1 > device.idleAV * 1.1
+		and device.outputAV1 < device.idleAV * 0.95
+		and device.outputAV1 > device.idleAV * 0.5
 	then
 		device.shutOffSoundRequested = false
 
@@ -3017,7 +3016,7 @@ end
 	end
 
 	-- Initialize or update engine coast down state
-	if device.starterEngagedCoef == 0 and not device.starterEngagedCoef == 1 then
+	if device.starterEngagedCoef == 0 and (device.lastStarterEngagedCoef or 0) == 1 then
 		device.coastDownRPM = device.outputAV1 * avToRPM
 		device.coastDownTime = 0
 	end
@@ -3074,6 +3073,7 @@ end
 			-- More severe torque reduction based on flood level
 			local misfireSeverity = floodLevel * 1.2 -- More aggressive scaling
 			local torqueReduction = math.max(0.1, 1.0 - (misfireSeverity * 0.9)) -- Up to 90% power loss
+			local misfireAmount = torqueReduction -- Fraction of torque remaining (1.0 = none, 0.1 = severe)
 
 			-- Apply torque reduction with a jolt effect
 			local currentTorque = torque
