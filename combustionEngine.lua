@@ -36,6 +36,105 @@ local torqueToPower = 0.0001404345295653085
 local psToWatt = 735.499
 local hydrolockThreshold = 1.9
 
+local function initCylinders(device)
+  device.cylinders = {}
+  local cylinderCount = device.fundamentalFrequencyCylinderCount or 8
+  for i = 1, cylinderCount do
+    device.cylinders[i] = {
+      fuelAmount = 0,            -- Amount of fuel in cylinder (0-1)
+      airAmount = 0.6,           -- Amount of air in cylinder (0-1)
+      compressionRatio = 8,      -- Engine compression ratio
+      isCompressing = false,     -- Whether cylinder is in compression stroke
+      isFiring = false,          -- Whether cylinder is in power stroke
+      sparkPlugFouled = false,   -- Whether spark plug is fouled (gasoline only)
+      lastFired = -1,            -- Last cycle this cylinder fired
+      misfireCount = 0,          -- Consecutive misfires
+      temperature = 0,           -- Current temperature (for heat simulation)
+      damage = 0,                -- Cylinder damage (0-1)
+      lastFuelAddTime = -1       -- When was fuel last added (to prevent rapid adding)
+    }
+  end
+end
+
+local function initBattery(device, jbeamData)
+  -- Set battery parameters based on system voltage (12V or 24V)
+  local is24V = device.batterySystemVoltage == 24
+
+  -- Set voltage thresholds based on system voltage
+  device.batteryNominalVoltage = is24V and 27.6 or 13.8  -- 27.6V for 24V, 13.8V for 12V when fully charged
+  device.batteryMinVoltage = is24V and 18.0 or 9.0       -- 18V for 24V, 9V for 12V systems
+  device.batteryCutoffVoltage = is24V and 16.0 or 8.0    -- Absolute minimum voltage before complete cutoff
+  device.batteryWarningVoltage = is24V and 22.0 or 11.0  -- Voltage when warning indicators activate
+  device.batteryLowVoltage = is24V and 20.0 or 10.0      -- Voltage when systems start to fail
+
+  -- Set charge and drain rates based on system voltage
+  device.batteryChargeRate = is24V and 1.0 or 0.5       -- Higher charge rate for 24V systems
+  device.batteryDrainRate = is24V and 30.0 or 15.0      -- Base drain rate when cranking (A)
+
+  -- Get battery capacity from vehicle battery if available
+  if electrics.values.batteryCapacity then
+    device.batteryCapacity = electrics.values.batteryCapacity
+  else
+    -- Fallback to JBeam value or default (100Ah)
+    device.batteryCapacity = jbeamData.batteryCapacity or 100.0
+  end
+
+  -- Initialize battery charge from vehicle state if available
+  if electrics.values.batteryCharge then
+    device.batteryCharge = electrics.values.batteryCharge
+  else
+    -- Start with full charge by default
+    device.batteryCharge = 1.0
+  end
+
+  -- Log battery initialization
+  log('I', 'combustionEngine.initBattery',
+      string.format('Battery initialized: %.1fV system, %.1fAh capacity',
+                    device.batterySystemVoltage, device.batteryCapacity))
+end
+
+local enrichmentMap = {
+  [-30] = 3.0,
+  [-20] = 2.6,
+  [-10] = 2.2,
+  [0] = 1.8,
+  [10] = 1.5,
+  [20] = 1.3,
+  [30] = 1.15,
+  [40] = 1.05,
+  [50] = 1.02,
+  [60] = 1.0,
+  [70] = 1.0
+}
+
+local function getColdEnrichment(tempC)
+  -- Find the two closest temperature points
+  local lowerTemp = -20
+  local upperTemp = 80
+  local lowerEnrich = 3.0
+  local upperEnrich = 0.85
+
+  -- Find the two closest temperature points in the map
+  for temp, _ in pairs(enrichmentMap) do
+    if temp <= tempC and temp > lowerTemp then
+      lowerTemp = temp
+      lowerEnrich = enrichmentMap[temp]
+    end
+    if temp >= tempC and temp < upperTemp then
+      upperTemp = temp
+      upperEnrich = enrichmentMap[temp]
+    end
+  end
+
+  -- Linear interpolation between the two closest points
+  if lowerTemp == upperTemp then
+    return lowerEnrich
+  end
+
+  local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
+  return lowerEnrich + (upperEnrich - lowerEnrich) * t
+end
+
 local function getTorqueData(device)
   local curves = {}
   local curveCounter = 1
@@ -563,45 +662,8 @@ local function updateGFX(device, dt)
   local currentRPM = device.outputAV1 * avToRPM
   
   -- Update battery state
-  local dt = 1/60  -- Fixed timestep for battery updates
+  local batteryDt = 1/60  -- Fixed timestep for battery updates
   
-  -- Local function to initialize battery parameters
-  local function initBattery(device, jbeamData)
-    -- Set battery parameters based on system voltage (12V or 24V)
-    local is24V = device.batterySystemVoltage == 24
-    
-    -- Set voltage thresholds based on system voltage
-    device.batteryNominalVoltage = is24V and 27.6 or 13.8  -- 27.6V for 24V, 13.8V for 12V when fully charged
-    device.batteryMinVoltage = is24V and 18.0 or 9.0       -- 18V for 24V, 9V for 12V systems
-    device.batteryCutoffVoltage = is24V and 16.0 or 8.0    -- Absolute minimum voltage before complete cutoff
-    device.batteryWarningVoltage = is24V and 22.0 or 11.0  -- Voltage when warning indicators activate
-    device.batteryLowVoltage = is24V and 20.0 or 10.0      -- Voltage when systems start to fail
-    
-    -- Set charge and drain rates based on system voltage
-    device.batteryChargeRate = is24V and 1.0 or 0.5       -- Higher charge rate for 24V systems
-    device.batteryDrainRate = is24V and 30.0 or 15.0      -- Base drain rate when cranking (A)
-    
-    -- Get battery capacity from vehicle battery if available
-    if electrics.values.batteryCapacity then
-      device.batteryCapacity = electrics.values.batteryCapacity
-    else
-      -- Fallback to JBeam value or default (100Ah)
-      device.batteryCapacity = jbeamData.batteryCapacity or 100.0
-    end
-    
-    -- Initialize battery charge from vehicle state if available
-    if electrics.values.batteryCharge then
-      device.batteryCharge = electrics.values.batteryCharge
-    else
-      -- Start with full charge by default
-      device.batteryCharge = 1.0
-    end
-    
-    -- Log battery initialization
-    log('I', 'combustionEngine.initBattery', 
-        string.format('Battery initialized: %.1fV system, %.1fAh capacity', 
-                      device.batterySystemVoltage, device.batteryCapacity))
-  end
 
   -- Ensure battery parameters are initialized
   if not device.batteryNominalVoltage then
@@ -621,13 +683,13 @@ local function updateGFX(device, dt)
   if starterActive and not engineRunning then
     -- Drain battery when starting (higher drain for 24V systems)
     local drainRate = (device.batteryDrainRate or 15.0) * (device.batteryDrainScale or 1.0)
-    device.batteryCharge = math.max(0, device.batteryCharge - (drainRate * dt) / ((device.batteryCapacity or 100.0) * 3600))
+    device.batteryCharge = math.max(0, device.batteryCharge - (drainRate * batteryDt) / ((device.batteryCapacity or 100.0) * 3600))
     device.batteryLoad = drainRate  -- Track current load in Amps
   elseif engineRunning then
     -- Recharge battery when engine is running above idle
     -- Charge rate is higher for 24V systems and scales with RPM
     local chargeRate = (device.batteryChargeRate or 0.5) * (device.outputAV1 / math.max(1, device.idleAV))
-    device.batteryCharge = math.min(1.0, device.batteryCharge + (chargeRate * dt) / 3600)
+    device.batteryCharge = math.min(1.0, device.batteryCharge + (chargeRate * batteryDt) / 3600)
     device.batteryLoad = -chargeRate  -- Negative load indicates charging
   else
     device.batteryLoad = 0  -- No load when engine is off and starter not engaged
@@ -1111,26 +1173,6 @@ local function updateTorque(device, dt)
   device.compressionState = device.compressionState or 0
   device.compressionStateTimer = device.compressionStateTimer or 0
   
-  -- Initialize per-cylinder fuel and combustion state
-  if not device.cylinders then
-    device.cylinders = {}
-    local cylinderCount = device.fundamentalFrequencyCylinderCount or 8
-    for i = 1, cylinderCount do
-      device.cylinders[i] = {
-        fuelAmount = 0,            -- Amount of fuel in cylinder (0-1)
-        airAmount = 0.6,           -- Amount of air in cylinder (0-1)
-        compressionRatio = 8,      -- Engine compression ratio
-        isCompressing = false,     -- Whether cylinder is in compression stroke
-        isFiring = false,          -- Whether cylinder is in power stroke
-        sparkPlugFouled = false,   -- Whether spark plug is fouled (gasoline only)
-        lastFired = -1,            -- Last cycle this cylinder fired
-        misfireCount = 0,          -- Consecutive misfires
-        temperature = 0,           -- Current temperature (for heat simulation)
-        damage = 0,                -- Cylinder damage (0-1)
-        lastFuelAddTime = -1       -- When was fuel last added (to prevent rapid adding)
-      }
-    end
-  end
   
   -- Initialize flood level and choke effect if not set
   device.floodLevel = device.floodLevel or 0
@@ -1175,10 +1217,7 @@ local function updateTorque(device, dt)
   
   
   -- Update per-cylinder flood levels with better state management
-  local currentTime = os.clock()
-  device.lastFloodUpdateTime = device.lastFloodUpdateTime or currentTime
-  local deltaTime = math.min(0.1, currentTime - device.lastFloodUpdateTime)  -- Cap delta time
-  device.lastFloodUpdateTime = currentTime
+  local deltaTime = dt
   
   -- Calculate flood changes based on engine state
   local floodChangeRate = 0
@@ -1212,17 +1251,16 @@ local function updateTorque(device, dt)
   device.floodLevel = newFloodLevel
   
   -- Debug settings with rate limiting and more detailed output
-  local debugFuel = true
-  device.lastFloodLogTime = device.lastFloodLogTime or 0
-  local currentTime = os.clock()
-  if debugFuel and (currentTime - device.lastFloodLogTime) > 2.0 then
+  local debugFuel = false
+  device.lastFloodLogTimer = (device.lastFloodLogTimer or 0) + dt
+  if debugFuel and device.lastFloodLogTimer > 2.0 then
     -- Only log if something interesting is happening
     if device.floodLevel > 0.05 or isCranking then
       -- Log basic flood info
       log('I', 'Flooding', string.format("Flood: %.1f%%, Cranking: %s, RPM: %.1f", 
           device.floodLevel * 100, tostring(isCranking), math.abs(device.outputAV1) * 9.5493))
       
-      device.lastFloodLogTime = currentTime
+      device.lastFloodLogTimer = 0
     end
   end
   
@@ -1242,50 +1280,6 @@ local function updateTorque(device, dt)
   -- Temperature effect on starter torque (reduces torque in cold conditions)
   local tempEffectOnStarter = 1.0 - math.max(0, math.min(0.7, (0 - engineTempC) / 30))
   
-  -- Cold start enrichment using temperature-based lookup table (reduced values)
-  local function getColdEnrichment(tempC)
-    -- Temperature in Celsius to enrichment factor mapping
-    -- [tempC] = enrichmentMultiplier
-    local enrichmentMap = {
-      [-30] = 3.0,  -- Reduced from 4.0
-      [-20] = 2.6,  -- Reduced from 3.5
-      [-10] = 2.2,  -- Reduced from 3.0
-      [0]   = 1.8,  -- Reduced from 2.5
-      [10]  = 1.5,  -- Reduced from 2.0
-      [20]  = 1.3,  -- Reduced from 1.5
-      [30]  = 1.15, -- Reduced from 1.25
-      [40]  = 1.05, -- Reduced from 1.1
-      [50]  = 1.02, -- Reduced from 1.05
-      [60]  = 1.0,
-      [70]  = 1.0
-    }
-    
-    -- Find the two closest temperature points
-    local lowerTemp = -20
-    local upperTemp = 80
-    local lowerEnrich = 3.0
-    local upperEnrich = 0.85
-    
-    -- Find the two closest temperature points in the map
-    for temp, _ in pairs(enrichmentMap) do
-      if temp <= tempC and temp > lowerTemp then
-        lowerTemp = temp
-        lowerEnrich = enrichmentMap[temp]
-      end
-      if temp >= tempC and temp < upperTemp then
-        upperTemp = temp
-        upperEnrich = enrichmentMap[temp]
-      end
-    end
-    
-    -- Linear interpolation between the two closest points
-    if lowerTemp == upperTemp then
-      return lowerEnrich
-    end
-    
-    local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
-    return lowerEnrich + (upperEnrich - lowerEnrich) * t
-  end
   
   -- Calculate cold start enrichment based on engine temperature
   local coldStartEnrichment = getColdEnrichment(engineTempC)
@@ -1704,19 +1698,17 @@ local function updateTorque(device, dt)
           
           -- Debug output for fuel addition with rate limiting
           if debugFuel and fuelAmount > 0 then
-            device.lastFuelLogTime = device.lastFuelLogTime or {}
-            device.lastFuelLogTime[i] = device.lastFuelLogTime[i] or 0
-            local currentTime = os.clock()
+            device.lastFuelLogTimer = device.lastFuelLogTimer or {}
+            device.lastFuelLogTimer[i] = (device.lastFuelLogTimer[i] or 0) + dt
             
-            if currentTime - device.lastFuelLogTime[i] > 1.0 then  -- Limit to once per second per cylinder
-              print(string.format("[FUEL] Cyl %d: Adding %.6f (total: %.6f) at pos %.2f, RPM: %.1f, Throttle: %.2f, State: %s, Temp: %.2f (%.1fs)", 
+            if device.lastFuelLogTimer[i] > 1.0 then  -- Limit to once per second per cylinder
+              print(string.format("[FUEL] Cyl %d: Adding %.6f (total: %.6f) at pos %.2f, RPM: %.1f, Throttle: %.2f, State: %s, Temp: %.2f",
                 i, fuelAmount, newFuel, device.cyclePosition, 
                 math.abs(device.outputAV1) * (30/math.pi),  -- Convert rad/s to RPM
                 throttle,
                 isCranking and "CRANKING" or (isRunning and "RUNNING" or "STARTING"),
-                device.temperature or 0,
-                currentTime))
-              device.lastFuelLogTime[i] = currentTime
+                device.temperature or 0))
+              device.lastFuelLogTimer[i] = 0
             end
           end
           
@@ -1776,14 +1768,13 @@ local function updateTorque(device, dt)
             
             device.floodLevel = math.min(1.0, (device.floodLevel or 0) + floodIncrement)
             if debugFuel then
-              device.lastFloodIncLogTime = device.lastFloodIncLogTime or {}
-              device.lastFloodIncLogTime[i] = device.lastFloodIncLogTime[i] or 0
-              local currentTime = os.clock()
+              device.lastFloodIncLogTimer = device.lastFloodIncLogTimer or {}
+              device.lastFloodIncLogTimer[i] = (device.lastFloodIncLogTimer[i] or 0) + dt
               
-              if currentTime - device.lastFloodIncLogTime[i] > 0.5 then  -- Limit to twice per second per cylinder
-                print(string.format("[FLOOD] Cyl %d: Level %.3f (+%.3f), Misfires: %d (%.1fs)", 
-                  i, device.floodLevel, floodIncrement, cylinder.misfireCount, currentTime))
-                device.lastFloodIncLogTime[i] = currentTime
+              if device.lastFloodIncLogTimer[i] > 0.5 then  -- Limit to twice per second per cylinder
+                print(string.format("[FLOOD] Cyl %d: Level %.3f (+%.3f), Misfires: %d",
+                  i, device.floodLevel, floodIncrement, cylinder.misfireCount))
+                device.lastFloodIncLogTimer[i] = 0
               end
             end
           end
@@ -1819,14 +1810,13 @@ local function updateTorque(device, dt)
           
           -- Debug output for successful combustion with rate limiting
           if debugFuel then
-            device.lastCombustLogTime = device.lastCombustLogTime or {}
-            device.lastCombustLogTime[i] = device.lastCombustLogTime[i] or 0
-            local currentTime = os.clock()
+            device.lastCombustLogTimer = device.lastCombustLogTimer or {}
+            device.lastCombustLogTimer[i] = (device.lastCombustLogTimer[i] or 0) + dt
             
-            if currentTime - device.lastCombustLogTime[i] > 0.5 then  -- Limit to twice per second per cylinder
-              print(string.format("[COMBUST] Cyl %d: Success! Fuel: %.4f, Air: %.4f, Temp: %.2f (%.1fs)", 
-                i, cylinder.fuelAmount, cylinder.airAmount, cylinder.temperature, currentTime))
-              device.lastCombustLogTime[i] = currentTime
+            if device.lastCombustLogTimer[i] > 0.5 then  -- Limit to twice per second per cylinder
+              print(string.format("[COMBUST] Cyl %d: Success! Fuel: %.4f, Air: %.4f, Temp: %.2f",
+                i, cylinder.fuelAmount, cylinder.airAmount, cylinder.temperature))
+              device.lastCombustLogTimer[i] = 0
             end
           end
           
@@ -1839,12 +1829,11 @@ local function updateTorque(device, dt)
           
           -- Debug output for misfire with rate limiting
           if debugFuel then
-            device.lastMisfireLogTime = device.lastMisfireLogTime or {}
-            device.lastMisfireLogTime[i] = device.lastMisfireLogTime[i] or 0
-            local currentTime = os.clock()
+            device.lastMisfireLogTimer = device.lastMisfireLogTimer or {}
+            device.lastMisfireLogTimer[i] = (device.lastMisfireLogTimer[i] or 0) + dt
             
-            if currentTime - device.lastMisfireLogTime[i] > 0.5 then  -- Limit to twice per second per cylinder
-              print(string.format("[MISFIRE] Cyl %d: #%d - Fuel: %.6f/%.6f, Air: %.3f/%.3f, Ign: %.2f/%.2f, Temp: %.2f, State: %s, Throttle: %.2f, RPM: %.1f (%.1fs)", 
+            if device.lastMisfireLogTimer[i] > 0.5 then  -- Limit to twice per second per cylinder
+              print(string.format("[MISFIRE] Cyl %d: #%d - Fuel: %.6f/%.6f, Air: %.3f/%.3f, Ign: %.2f/%.2f, Temp: %.2f, State: %s, Throttle: %.2f, RPM: %.1f",
                 i, 
                 cylinder.misfireCount, 
                 cylinder.fuelAmount, tempAdjustedMinFuel,
@@ -1853,9 +1842,8 @@ local function updateTorque(device, dt)
                 device.temperature or 0,
                 isCranking and "CRANKING" or (isRunning and "RUNNING" or "STARTING"),
                 throttle,
-                math.abs(device.outputAV1) * (30/math.pi),
-                currentTime))
-              device.lastMisfireLogTime[i] = currentTime
+                math.abs(device.outputAV1) * (30/math.pi)))
+              device.lastMisfireLogTimer[i] = 0
             end
           end
           
@@ -1869,14 +1857,13 @@ local function updateTorque(device, dt)
               local floodIncrement = 0.005 * (1.0 + cylinder.fuelAmount * 0.005)  -- 0.5% to 1.5% increase based on fuel
               device.floodLevel = math.min(1.0, (device.floodLevel or 0) + floodIncrement)
               if debugFuel then
-                device.lastFloodIncLogTime = device.lastFloodIncLogTime or {}
-                device.lastFloodIncLogTime[i] = device.lastFloodIncLogTime[i] or 0
-                local currentTime = os.clock()
+                device.lastFloodIncLogTimer = device.lastFloodIncLogTimer or {}
+                device.lastFloodIncLogTimer[i] = (device.lastFloodIncLogTimer[i] or 0) + dt
                 
-                if currentTime - device.lastFloodIncLogTime[i] > 0.5 then  -- Limit to twice per second per cylinder
-                  print(string.format("[FLOOD] Cyl %d: Level %.3f (+%.3f), Misfires: %d (%.1fs)", 
-                    i, device.floodLevel, floodIncrement, cylinder.misfireCount, currentTime))
-                  device.lastFloodIncLogTime[i] = currentTime
+                if device.lastFloodIncLogTimer[i] > 0.5 then  -- Limit to twice per second per cylinder
+                  print(string.format("[FLOOD] Cyl %d: Level %.3f (+%.3f), Misfires: %d",
+                    i, device.floodLevel, floodIncrement, cylinder.misfireCount))
+                  device.lastFloodIncLogTimer[i] = 0
                 end
               end
             end
@@ -2821,6 +2808,9 @@ local function reset(device, jbeamData)
   device.batteryDrainScale = device.batteryDrainScale or 1.0
   device.batteryLoad = 0
 
+  initBattery(device, jbeamData)
+  initCylinders(device)
+
   device.engineWorkPerUpdate = 0
   device.frictionLossPerUpdate = 0
   device.pumpingLossPerUpdate = 0
@@ -2873,42 +2863,6 @@ local function reset(device, jbeamData)
   selectUpdates(device)
 end
 
-local function initBattery(device, jbeamData)
-  -- Set battery parameters based on system voltage (12V or 24V)
-  local is24V = device.batterySystemVoltage == 24
-  
-  -- Set voltage thresholds based on system voltage
-  device.batteryNominalVoltage = is24V and 27.6 or 13.8  -- 27.6V for 24V, 13.8V for 12V when fully charged
-  device.batteryMinVoltage = is24V and 18.0 or 9.0       -- 18V for 24V, 9V for 12V systems
-  device.batteryCutoffVoltage = is24V and 16.0 or 8.0    -- Absolute minimum voltage before complete cutoff
-  device.batteryWarningVoltage = is24V and 22.0 or 11.0  -- Voltage when warning indicators activate
-  device.batteryLowVoltage = is24V and 20.0 or 10.0      -- Voltage when systems start to fail
-  
-  -- Set charge and drain rates based on system voltage
-  device.batteryChargeRate = is24V and 1.0 or 0.5       -- Higher charge rate for 24V systems
-  device.batteryDrainRate = is24V and 30.0 or 15.0      -- Base drain rate when cranking (A)
-  
-  -- Get battery capacity from vehicle battery if available
-  if electrics.values.batteryCapacity then
-    device.batteryCapacity = electrics.values.batteryCapacity
-  else
-    -- Fallback to JBeam value or default (100Ah)
-    device.batteryCapacity = jbeamData.batteryCapacity or 100.0
-  end
-  
-  -- Initialize battery charge from vehicle state if available
-  if electrics.values.batteryCharge then
-    device.batteryCharge = electrics.values.batteryCharge
-  else
-    -- Start with full charge by default
-    device.batteryCharge = 1.0
-  end
-  
-  -- Log battery initialization
-  log('I', 'combustionEngine.initBattery', 
-      string.format('Battery initialized: %.1fV system, %.1fAh capacity', 
-                    device.batterySystemVoltage, device.batteryCapacity))
-end
 
 local function initSounds(device, jbeamData)
   local exhaustEndNodes = device.thermals.exhaustEndNodes or {}
@@ -3359,6 +3313,9 @@ local function new(jbeamData)
 
   device.ignitionCoef = spawnWithIgnitionOn and 1 or 0
   device.invStarterMaxAV = 1 / device.starterMaxAV
+
+  initBattery(device, jbeamData)
+  initCylinders(device)
 
   device.initialFriction = device.friction
   device.engineBrakeTorque = jbeamData.engineBrakeTorque or device.friction * 2
