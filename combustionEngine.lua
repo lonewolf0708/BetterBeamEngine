@@ -36,6 +36,50 @@ local torqueToPower = 0.0001404345295653085
 local psToWatt = 735.499
 local hydrolockThreshold = 1.9
 
+-- Static data for cold start enrichment
+local enrichmentMap = {
+  [-30] = 3.0,
+  [-20] = 2.6,
+  [-10] = 2.2,
+  [0]   = 1.8,
+  [10]  = 1.5,
+  [20]  = 1.3,
+  [30]  = 1.15,
+  [40]  = 1.05,
+  [50]  = 1.02,
+  [60]  = 1.0,
+  [70]  = 1.0
+}
+
+-- Helper function for cold start enrichment (hoisted to module scope for performance)
+local function getColdEnrichment(tempC)
+  -- Find the two closest temperature points
+  local lowerTemp = -20
+  local upperTemp = 80
+  local lowerEnrich = 3.0
+  local upperEnrich = 0.85
+
+  -- Find the two closest temperature points in the map
+  for temp, _ in pairs(enrichmentMap) do
+    if temp <= tempC and temp > lowerTemp then
+      lowerTemp = temp
+      lowerEnrich = enrichmentMap[temp]
+    end
+    if temp >= tempC and temp < upperTemp then
+      upperTemp = temp
+      upperEnrich = enrichmentMap[temp]
+    end
+  end
+
+  -- Linear interpolation between the two closest points
+  if lowerTemp == upperTemp then
+    return lowerEnrich
+  end
+
+  local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
+  return lowerEnrich + (upperEnrich - lowerEnrich) * t
+end
+
 local function getTorqueData(device)
   local curves = {}
   local curveCounter = 1
@@ -563,46 +607,8 @@ local function updateGFX(device, dt)
   local currentRPM = device.outputAV1 * avToRPM
   
   -- Update battery state
-  local dt = 1/60  -- Fixed timestep for battery updates
+  local batteryDt = 1/60  -- Fixed timestep for battery updates
   
-  -- Local function to initialize battery parameters
-  local function initBattery(device, jbeamData)
-    -- Set battery parameters based on system voltage (12V or 24V)
-    local is24V = device.batterySystemVoltage == 24
-    
-    -- Set voltage thresholds based on system voltage
-    device.batteryNominalVoltage = is24V and 27.6 or 13.8  -- 27.6V for 24V, 13.8V for 12V when fully charged
-    device.batteryMinVoltage = is24V and 18.0 or 9.0       -- 18V for 24V, 9V for 12V systems
-    device.batteryCutoffVoltage = is24V and 16.0 or 8.0    -- Absolute minimum voltage before complete cutoff
-    device.batteryWarningVoltage = is24V and 22.0 or 11.0  -- Voltage when warning indicators activate
-    device.batteryLowVoltage = is24V and 20.0 or 10.0      -- Voltage when systems start to fail
-    
-    -- Set charge and drain rates based on system voltage
-    device.batteryChargeRate = is24V and 1.0 or 0.5       -- Higher charge rate for 24V systems
-    device.batteryDrainRate = is24V and 30.0 or 15.0      -- Base drain rate when cranking (A)
-    
-    -- Get battery capacity from vehicle battery if available
-    if electrics.values.batteryCapacity then
-      device.batteryCapacity = electrics.values.batteryCapacity
-    else
-      -- Fallback to JBeam value or default (100Ah)
-      device.batteryCapacity = jbeamData.batteryCapacity or 100.0
-    end
-    
-    -- Initialize battery charge from vehicle state if available
-    if electrics.values.batteryCharge then
-      device.batteryCharge = electrics.values.batteryCharge
-    else
-      -- Start with full charge by default
-      device.batteryCharge = 1.0
-    end
-    
-    -- Log battery initialization
-    log('I', 'combustionEngine.initBattery', 
-        string.format('Battery initialized: %.1fV system, %.1fAh capacity', 
-                      device.batterySystemVoltage, device.batteryCapacity))
-  end
-
   -- Ensure battery parameters are initialized
   if not device.batteryNominalVoltage then
     -- Initialize battery if not already done
@@ -621,13 +627,13 @@ local function updateGFX(device, dt)
   if starterActive and not engineRunning then
     -- Drain battery when starting (higher drain for 24V systems)
     local drainRate = (device.batteryDrainRate or 15.0) * (device.batteryDrainScale or 1.0)
-    device.batteryCharge = math.max(0, device.batteryCharge - (drainRate * dt) / ((device.batteryCapacity or 100.0) * 3600))
+    device.batteryCharge = math.max(0, device.batteryCharge - (drainRate * batteryDt) / ((device.batteryCapacity or 100.0) * 3600))
     device.batteryLoad = drainRate  -- Track current load in Amps
   elseif engineRunning then
     -- Recharge battery when engine is running above idle
     -- Charge rate is higher for 24V systems and scales with RPM
     local chargeRate = (device.batteryChargeRate or 0.5) * (device.outputAV1 / math.max(1, device.idleAV))
-    device.batteryCharge = math.min(1.0, device.batteryCharge + (chargeRate * dt) / 3600)
+    device.batteryCharge = math.min(1.0, device.batteryCharge + (chargeRate * batteryDt) / 3600)
     device.batteryLoad = -chargeRate  -- Negative load indicates charging
   else
     device.batteryLoad = 0  -- No load when engine is off and starter not engaged
@@ -1175,10 +1181,7 @@ local function updateTorque(device, dt)
   
   
   -- Update per-cylinder flood levels with better state management
-  local currentTime = os.clock()
-  device.lastFloodUpdateTime = device.lastFloodUpdateTime or currentTime
-  local deltaTime = math.min(0.1, currentTime - device.lastFloodUpdateTime)  -- Cap delta time
-  device.lastFloodUpdateTime = currentTime
+  local deltaTime = dt
   
   -- Calculate flood changes based on engine state
   local floodChangeRate = 0
@@ -1212,17 +1215,19 @@ local function updateTorque(device, dt)
   device.floodLevel = newFloodLevel
   
   -- Debug settings with rate limiting and more detailed output
-  local debugFuel = true
-  device.lastFloodLogTime = device.lastFloodLogTime or 0
-  local currentTime = os.clock()
-  if debugFuel and (currentTime - device.lastFloodLogTime) > 2.0 then
-    -- Only log if something interesting is happening
-    if device.floodLevel > 0.05 or isCranking then
-      -- Log basic flood info
-      log('I', 'Flooding', string.format("Flood: %.1f%%, Cranking: %s, RPM: %.1f", 
-          device.floodLevel * 100, tostring(isCranking), math.abs(device.outputAV1) * 9.5493))
-      
-      device.lastFloodLogTime = currentTime
+  local debugFuel = false -- BOLT: Disabled high-frequency debug by default
+  if debugFuel then
+    device.lastFloodLogTime = device.lastFloodLogTime or 0
+    local currentTime = os.clock()
+    if (currentTime - device.lastFloodLogTime) > 2.0 then
+      -- Only log if something interesting is happening
+      if device.floodLevel > 0.05 or isCranking then
+        -- Log basic flood info
+        log('I', 'Flooding', string.format("Flood: %.1f%%, Cranking: %s, RPM: %.1f",
+            device.floodLevel * 100, tostring(isCranking), math.abs(device.outputAV1) * 9.5493))
+
+        device.lastFloodLogTime = currentTime
+      end
     end
   end
   
@@ -1241,51 +1246,6 @@ local function updateTorque(device, dt)
   
   -- Temperature effect on starter torque (reduces torque in cold conditions)
   local tempEffectOnStarter = 1.0 - math.max(0, math.min(0.7, (0 - engineTempC) / 30))
-  
-  -- Cold start enrichment using temperature-based lookup table (reduced values)
-  local function getColdEnrichment(tempC)
-    -- Temperature in Celsius to enrichment factor mapping
-    -- [tempC] = enrichmentMultiplier
-    local enrichmentMap = {
-      [-30] = 3.0,  -- Reduced from 4.0
-      [-20] = 2.6,  -- Reduced from 3.5
-      [-10] = 2.2,  -- Reduced from 3.0
-      [0]   = 1.8,  -- Reduced from 2.5
-      [10]  = 1.5,  -- Reduced from 2.0
-      [20]  = 1.3,  -- Reduced from 1.5
-      [30]  = 1.15, -- Reduced from 1.25
-      [40]  = 1.05, -- Reduced from 1.1
-      [50]  = 1.02, -- Reduced from 1.05
-      [60]  = 1.0,
-      [70]  = 1.0
-    }
-    
-    -- Find the two closest temperature points
-    local lowerTemp = -20
-    local upperTemp = 80
-    local lowerEnrich = 3.0
-    local upperEnrich = 0.85
-    
-    -- Find the two closest temperature points in the map
-    for temp, _ in pairs(enrichmentMap) do
-      if temp <= tempC and temp > lowerTemp then
-        lowerTemp = temp
-        lowerEnrich = enrichmentMap[temp]
-      end
-      if temp >= tempC and temp < upperTemp then
-        upperTemp = temp
-        upperEnrich = enrichmentMap[temp]
-      end
-    end
-    
-    -- Linear interpolation between the two closest points
-    if lowerTemp == upperTemp then
-      return lowerEnrich
-    end
-    
-    local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
-    return lowerEnrich + (upperEnrich - lowerEnrich) * t
-  end
   
   -- Calculate cold start enrichment based on engine temperature
   local coldStartEnrichment = getColdEnrichment(engineTempC)
