@@ -740,8 +740,6 @@ local function updateGFX(device, dt)
 		if device.starterBattery then
 			local starterSpentEnergy = 1 / guardZero(abs(device.outputAV1)) * dt * device.starterTorque / 1.5 -- 0.5 efficiency
 			device.starterBattery.storedEnergy = device.starterBattery.storedEnergy - starterSpentEnergy
-			print(starterSpentEnergy)
-			print(device.starterBattery.remainingRatio)
 		end
 
 		device.starterThrottleKillCoef = 1
@@ -1721,16 +1719,10 @@ local function updateTorque(device, dt)
 	-- Calculate final starter torque with velocity-based reduction and engagement
 	-- Multiplies starter engagement (0-1) by base torque, then scales based on engine speed
 
-	-- Different torque curves for diesel vs gasoline engines
-	local maxTorqueAtZeroRPM, minTorqueAtHighRPM
-
 	-- Initialize compression and cylinder states if not exists
 	device.compressionOscTimer = device.compressionOscTimer or 0
 	device.compressionState = device.compressionState or 0
 	device.compressionStateTimer = device.compressionStateTimer or 0
-
-	-- Store the last starter engaged state for next frame
-	device.lastStarterEngagedCoef = device.starterEngagedCoef
 
 	-- Initialize per-cylinder fuel and combustion state
 	if not device.cylinders then
@@ -1795,12 +1787,6 @@ local function updateTorque(device, dt)
 		end
 	end
 
-	-- Update per-cylinder flood levels with better state management
-	local currentTime = os.clock()
-	device.lastFloodUpdateTime = device.lastFloodUpdateTime or currentTime
-	local deltaTime = math.min(0.1, currentTime - device.lastFloodUpdateTime) -- Cap delta time
-	device.lastFloodUpdateTime = currentTime
-
 	-- Calculate flood changes based on engine state
 	local floodChangeRate = 0
 	if isCranking and math.random() < 0.09 then -- Reduced chance of increasing flood
@@ -1811,7 +1797,7 @@ local function updateTorque(device, dt)
 		if throttle > 0.8 then
 			recoveryMultiplier = recoveryMultiplier * 2
 		end -- Clear flood mode
-		floodChangeRate = -floodRecoveryRate * deltaTime * 10 * recoveryMultiplier
+		floodChangeRate = -floodRecoveryRate * dt * 10 * recoveryMultiplier
 	end
 
 	-- Apply flood changes with some randomness and smoothing
@@ -2416,12 +2402,12 @@ end
 			end
 			device.startingHesitationFactor = 0.0
 		else
-			device.startingHesitationFactor = 2.0
+			device.startingHesitationFactor = 1.0
 			if hesitationDebug then
 				log(
 					"D",
 					"startingHesitation",
-					"Not cranking, factor set to 2.0 for device: " .. (device.name or "unknown")
+					"Not cranking, factor set to 1.0 for device: " .. (device.name or "unknown")
 				)
 			end
 		end
@@ -2885,10 +2871,6 @@ end
 	local rpm = math.abs(device.outputAV1) * avToRPM
 	local rpmFactor = math.min(1, rpm / 1000) -- 1.0 at 1000 RPM, tapers off above
 
-	-- Stronger effect at lower RPMs, tapers off as RPM increases
-	local compressionStrength = 1.8 * (1 - rpmFactor * 0.8) -- 1.5x at 0 RPM, 0.3x at 1000 RPM
-	local powerStrength = 3.0 * (1 - rpmFactor * 0.8) -- 2.0x at 0 RPM, 0.2x at 1000 RPM
-
 	-- Calculate ignition error chances based on RPM and engine state
 	local isDiesel = device.requiredEnergyType == "diesel"
 	local engineBlockTemp = device.thermals and device.thermals.engineBlockTemperature or 20 -- Default to room temp if not available
@@ -2990,7 +2972,7 @@ end
 
 	-- Smooth the transition between strokes
 	device.lastModifiedTorque = device.lastModifiedTorque or baseStarterTorque
-	baseStarterTorque = device.lastModifiedTorque + (modifiedTorque - device.lastModifiedTorque) * 1.2 -- 20% smoothing
+	baseStarterTorque = device.lastModifiedTorque + (modifiedTorque - device.lastModifiedTorque) * 0.2 -- 20% smoothing
 	device.lastModifiedTorque = baseStarterTorque
 
 	if device.isMisfiring then
