@@ -40,6 +40,7 @@ local torqueDebug = false
 local hesitationDebug = true
 local starterDebug = false
 local debugBatt = false
+local debugFuel = false
 
 local fuelProperties = {
 	gasoline = { -- Default alias for 91
@@ -1821,7 +1822,6 @@ local function updateTorque(device, dt)
 	device.floodLevel = newFloodLevel
 
 	-- Debug settings with rate limiting and more detailed output
-	local debugFuel = false
 	device.lastFloodLogTime = device.lastFloodLogTime or 0
 	local currentTime = os.clock()
 if debugFuel and (currentTime - device.lastFloodLogTime) > 2.0 then
