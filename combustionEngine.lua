@@ -1222,10 +1222,7 @@ local function updateTorque(device, dt)
   
   
   -- Update per-cylinder flood levels with better state management
-  local currentTime = os.clock()
-  device.lastFloodUpdateTime = device.lastFloodUpdateTime or currentTime
-  local deltaTime = math.min(0.1, currentTime - device.lastFloodUpdateTime)  -- Cap delta time
-  device.lastFloodUpdateTime = currentTime
+  local deltaTime = dt
   
   -- Calculate flood changes based on engine state
   local floodChangeRate = 0
