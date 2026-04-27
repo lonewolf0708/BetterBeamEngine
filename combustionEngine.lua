@@ -1876,7 +1876,7 @@ end
 		}
 
 		-- Find the two closest temperature points
-		local lowerTemp = -20
+		local lowerTemp = -40
 		local upperTemp = 80
 		local lowerEnrich = 3.0
 		local upperEnrich = 0.85
