@@ -36,6 +36,53 @@ local torqueToPower = 0.0001404345295653085
 local psToWatt = 735.499
 local hydrolockThreshold = 1.9
 
+local debugFuel = false -- Moved to module scope and disabled for performance
+local debugBatt = false -- Moved to module scope
+
+-- Temperature in Celsius to enrichment factor mapping
+-- [tempC] = enrichmentMultiplier
+local enrichmentMap = {
+  [-30] = 3.0,  -- Reduced from 4.0
+  [-20] = 2.6,  -- Reduced from 3.5
+  [-10] = 2.2,  -- Reduced from 3.0
+  [0]   = 1.8,  -- Reduced from 2.5
+  [10]  = 1.5,  -- Reduced from 2.0
+  [20]  = 1.3,  -- Reduced from 1.5
+  [30]  = 1.15, -- Reduced from 1.25
+  [40]  = 1.05, -- Reduced from 1.1
+  [50]  = 1.02, -- Reduced from 1.05
+  [60]  = 1.0,
+  [70]  = 1.0
+}
+
+local function getColdEnrichment(tempC)
+  -- Find the two closest temperature points
+  local lowerTemp = -20
+  local upperTemp = 80
+  local lowerEnrich = 3.0
+  local upperEnrich = 0.85
+
+  -- Find the two closest temperature points in the map
+  for temp, _ in pairs(enrichmentMap) do
+    if temp <= tempC and temp > lowerTemp then
+      lowerTemp = temp
+      lowerEnrich = enrichmentMap[temp]
+    end
+    if temp >= tempC and temp < upperTemp then
+      upperTemp = temp
+      upperEnrich = enrichmentMap[temp]
+    end
+  end
+
+  -- Linear interpolation between the two closest points
+  if lowerTemp == upperTemp then
+    return lowerEnrich
+  end
+
+  local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
+  return lowerEnrich + (upperEnrich - lowerEnrich) * t
+end
+
 local function getTorqueData(device)
   local curves = {}
   local curveCounter = 1
@@ -1212,17 +1259,18 @@ local function updateTorque(device, dt)
   device.floodLevel = newFloodLevel
   
   -- Debug settings with rate limiting and more detailed output
-  local debugFuel = true
-  device.lastFloodLogTime = device.lastFloodLogTime or 0
-  local currentTime = os.clock()
-  if debugFuel and (currentTime - device.lastFloodLogTime) > 2.0 then
+  if debugFuel then
+    device.lastFloodLogTime = device.lastFloodLogTime or 0
+    local currentTime = os.clock()
+    if (currentTime - device.lastFloodLogTime) > 2.0 then
     -- Only log if something interesting is happening
     if device.floodLevel > 0.05 or isCranking then
       -- Log basic flood info
       log('I', 'Flooding', string.format("Flood: %.1f%%, Cranking: %s, RPM: %.1f", 
           device.floodLevel * 100, tostring(isCranking), math.abs(device.outputAV1) * 9.5493))
       
-      device.lastFloodLogTime = currentTime
+        device.lastFloodLogTime = currentTime
+      end
     end
   end
   
@@ -1243,50 +1291,6 @@ local function updateTorque(device, dt)
   local tempEffectOnStarter = 1.0 - math.max(0, math.min(0.7, (0 - engineTempC) / 30))
   
   -- Cold start enrichment using temperature-based lookup table (reduced values)
-  local function getColdEnrichment(tempC)
-    -- Temperature in Celsius to enrichment factor mapping
-    -- [tempC] = enrichmentMultiplier
-    local enrichmentMap = {
-      [-30] = 3.0,  -- Reduced from 4.0
-      [-20] = 2.6,  -- Reduced from 3.5
-      [-10] = 2.2,  -- Reduced from 3.0
-      [0]   = 1.8,  -- Reduced from 2.5
-      [10]  = 1.5,  -- Reduced from 2.0
-      [20]  = 1.3,  -- Reduced from 1.5
-      [30]  = 1.15, -- Reduced from 1.25
-      [40]  = 1.05, -- Reduced from 1.1
-      [50]  = 1.02, -- Reduced from 1.05
-      [60]  = 1.0,
-      [70]  = 1.0
-    }
-    
-    -- Find the two closest temperature points
-    local lowerTemp = -20
-    local upperTemp = 80
-    local lowerEnrich = 3.0
-    local upperEnrich = 0.85
-    
-    -- Find the two closest temperature points in the map
-    for temp, _ in pairs(enrichmentMap) do
-      if temp <= tempC and temp > lowerTemp then
-        lowerTemp = temp
-        lowerEnrich = enrichmentMap[temp]
-      end
-      if temp >= tempC and temp < upperTemp then
-        upperTemp = temp
-        upperEnrich = enrichmentMap[temp]
-      end
-    end
-    
-    -- Linear interpolation between the two closest points
-    if lowerTemp == upperTemp then
-      return lowerEnrich
-    end
-    
-    local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
-    return lowerEnrich + (upperEnrich - lowerEnrich) * t
-  end
-  
   -- Calculate cold start enrichment based on engine temperature
   local coldStartEnrichment = getColdEnrichment(engineTempC)
   
@@ -1437,7 +1441,6 @@ local function updateTorque(device, dt)
   device.batteryLogCounter = device.batteryLogCounter + 1
 
   --change to true to enable debugging logs
-  local debugBatt = false
 
   if debugBatt then 
   --log detailed battery state every 50 physics ticks when starter is engaged, or every 200 ticks when not
