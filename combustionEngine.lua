@@ -974,6 +974,8 @@ local function updateGFX(device, dt)
 			local chargeRate = (device.batteryChargeRate or 0.5) * (device.outputAV1 / math.max(1, device.idleAV))
 			device.batteryCharge = math.min(1.0, device.batteryCharge + (chargeRate * dt) / 3600)
 			device.batteryLoad = -chargeRate -- Negative load indicates charging
+		else
+			device.batteryLoad = 0
 		end
 	end
 
@@ -3216,12 +3218,6 @@ end
 		end
 	end
 
-	if device.outputTorqueNames and device.outputTorqueNames[1] then
-		device[device.outputTorqueNames[1]] = torque
-	else
-		-- Fallback for some engine versions/mods
-		device.outputTorque1 = torque
-	end
 end
 
 local function selectUpdates(device)
