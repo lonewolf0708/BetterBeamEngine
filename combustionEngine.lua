@@ -2523,7 +2523,6 @@ end
 
 				-- Add fuel to cylinder with a minimum amount
 				local newFuel = math.min(maxFuelPerCylinder, cylinder.fuelAmount + fuelAmount * dt * 0.8)
-				local debugFuel = false
 
 				-- Debug output for fuel addition with rate limiting
 				if debugFuel and fuelAmount > 0 then
