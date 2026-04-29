@@ -690,6 +690,41 @@ local function updateFuelUsage(device)
 	device.remainingFuelRatio = remainingFuelRatio / device.storageWithEnergyCounter
 end
 
+local function initBattery(device, jbeamData)
+	local is24V = device.batterySystemVoltage == 24
+
+	device.batteryNominalVoltage = is24V and 27.6 or 13.8
+	device.batteryMinVoltage = is24V and 18.0 or 9.0
+	device.batteryCutoffVoltage = is24V and 16.0 or 8.0
+	device.batteryWarningVoltage = is24V and 22.0 or 11.0
+	device.batteryLowVoltage = is24V and 20.0 or 10.0
+
+	device.batteryChargeRate = is24V and 1.0 or 0.5
+	device.batteryDrainRate = is24V and 30.0 or 15.0
+
+	if electrics.values.batteryCapacity then
+		device.batteryCapacity = electrics.values.batteryCapacity
+	else
+		device.batteryCapacity = jbeamData.batteryCapacity or 100.0
+	end
+
+	if electrics.values.batteryCharge then
+		device.batteryCharge = electrics.values.batteryCharge
+	else
+		device.batteryCharge = 1.0
+	end
+
+	log(
+		"I",
+		"combustionEngine.initBattery",
+		string.format(
+			"Battery initialized: %.1fV system, %.1fAh capacity",
+			device.batterySystemVoltage,
+			device.batteryCapacity
+		)
+	)
+end
+
 local function updateGFX(device, dt)
 	if device.stallBuzzerSoundID then -- Check if the source was created successfully at init
 		-- Condition: Ignition is ON, but engine RPM is below a threshold (e.g., 50% of idle)
@@ -901,51 +936,6 @@ local function updateGFX(device, dt)
 	end
 
 	-- Update battery state
-
-	-- Local function to initialize battery parameters
-	local function initBattery(device, jbeamData)
-		-- Set battery parameters based on system voltage (12V or 24V)
-		local is24V = device.batterySystemVoltage == 24
-
-		-- Set voltage thresholds based on system voltage
-		device.batteryNominalVoltage = is24V and 27.6 or 13.8 -- 27.6V for 24V, 13.8V for 12V when fully charged
-		device.batteryMinVoltage = is24V and 18.0 or 9.0 -- 18V for 24V, 9V for 12V systems
-		device.batteryCutoffVoltage = is24V and 16.0 or 8.0 -- Absolute minimum voltage before complete cutoff
-		device.batteryWarningVoltage = is24V and 22.0 or 11.0 -- Voltage when warning indicators activate
-		device.batteryLowVoltage = is24V and 20.0 or 10.0 -- Voltage when systems start to fail
-
-		-- Set charge and drain rates based on system voltage
-		device.batteryChargeRate = is24V and 1.0 or 0.5 -- Higher charge rate for 24V systems
-		device.batteryDrainRate = is24V and 30.0 or 15.0 -- Base drain rate when cranking (A)
-
-		-- Get battery capacity from vehicle battery if available
-		if electrics.values.batteryCapacity then
-			device.batteryCapacity = electrics.values.batteryCapacity
-		else
-			-- Fallback to JBeam value or default (100Ah)
-			device.batteryCapacity = jbeamData.batteryCapacity or 100.0
-		end
-
-		-- Initialize battery charge from vehicle state if available
-		if electrics.values.batteryCharge then
-			device.batteryCharge = electrics.values.batteryCharge
-		else
-			-- Start with full charge by default
-			device.batteryCharge = 1.0
-		end
-
-		-- Log battery initialization
-		log(
-			"I",
-			"combustionEngine.initBattery",
-			string.format(
-				"Battery initialized: %.1fV system, %.1fAh capacity",
-				device.batterySystemVoltage,
-				device.batteryCapacity
-			)
-		)
-	end
-
 	-- Ensure battery parameters are initialized
 	if not device.batteryNominalVoltage then
 		-- Initialize battery if not already done
@@ -1529,6 +1519,46 @@ end
 
 -- velocity update is always nopped for engines
 
+-- Cold enrichment lookup table (hoisted to module scope to avoid allocation in hot path)
+local coldEnrichmentMap = {
+	[-30] = 3.0,
+	[-20] = 2.6,
+	[-10] = 2.2,
+	[0] = 1.8,
+	[10] = 1.5,
+	[20] = 1.3,
+	[30] = 1.15,
+	[40] = 1.05,
+	[50] = 1.02,
+	[60] = 1.0,
+	[70] = 1.0,
+}
+
+local function getColdEnrichment(tempC)
+	local lowerTemp = -40
+	local upperTemp = 80
+	local lowerEnrich = 3.0
+	local upperEnrich = 0.85
+
+	for temp, _ in pairs(coldEnrichmentMap) do
+		if temp <= tempC and temp > lowerTemp then
+			lowerTemp = temp
+			lowerEnrich = coldEnrichmentMap[temp]
+		end
+		if temp >= tempC and temp < upperTemp then
+			upperTemp = temp
+			upperEnrich = coldEnrichmentMap[temp]
+		end
+	end
+
+	if lowerTemp == upperTemp then
+		return lowerEnrich
+	end
+
+	local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
+	return lowerEnrich + (upperEnrich - lowerEnrich) * t
+end
+
 local function updateTorque(device, dt)
 	local recoveryFloodThreshold = 0.2
 	local floodStartThreshold = 0.1
@@ -1823,32 +1853,29 @@ local function updateTorque(device, dt)
 
 	-- Debug settings with rate limiting and more detailed output
 	local debugFuel = false
-	device.lastFloodLogTime = device.lastFloodLogTime or 0
-	local currentTime = os.clock()
-if debugFuel and (currentTime - device.lastFloodLogTime) > 2.0 then
-    -- Only log if something interesting is happening
-    if device.floodLevel > 0.05 and isCranking then
-        -- Calculate current torque reduction for debugging
-        local floodTorqueReduction = math.min(0.75, (device.floodLevel * 1.5) * 0.5)
-        local remainingTorque = (1 - floodTorqueReduction) * 100
-        
-        -- Log comprehensive flood info
-        log(
-            "I",
-            "Flooding",
-            string.format(
-                "Flood: %.1f%% | Torque Loss: %.1f%% | Remaining: %.1f%% | RPM: %.1f | Cranking: %s",
-                device.floodLevel * 100,
-                floodTorqueReduction * 100,
-                remainingTorque,
-                math.abs(device.outputAV1) * 9.5493,
-                tostring(isCranking)
-            )
-        )
-        
-        device.lastFloodLogTime = currentTime
-    end
-end
+	if debugFuel then
+		device.lastFloodLogTime = device.lastFloodLogTime or 0
+		local currentTime = os.clock()
+		if (currentTime - device.lastFloodLogTime) > 2.0 then
+			if device.floodLevel > 0.05 and isCranking then
+				local floodTorqueReduction = math.min(0.75, (device.floodLevel * 1.5) * 0.5)
+				local remainingTorque = (1 - floodTorqueReduction) * 100
+				log(
+					"I",
+					"Flooding",
+					string.format(
+						"Flood: %.1f%% | Torque Loss: %.1f%% | Remaining: %.1f%% | RPM: %.1f | Cranking: %s",
+						device.floodLevel * 100,
+						floodTorqueReduction * 100,
+						remainingTorque,
+						math.abs(device.outputAV1) * 9.5493,
+						tostring(isCranking)
+					)
+				)
+				device.lastFloodLogTime = currentTime
+			end
+		end
+	end
 	-- Engine state flags - more accurate state detection
 
 	-- Temperature handling - engine temperatures are in Celsius
@@ -1857,51 +1884,6 @@ end
 
 	-- Temperature effect on starter torque (reduces torque in cold conditions)
 	local tempEffectOnStarter = 1.0 - math.max(0, math.min(0.85, (0 - engineTempC) / 25)) -- Steeper drop off, max 85% reduction
-
-	-- Cold start enrichment using temperature-based lookup table (reduced values)
-	local function getColdEnrichment(tempC)
-		-- Temperature in Celsius to enrichment factor mapping
-		-- [tempC] = enrichmentMultiplier
-		local enrichmentMap = {
-			[-30] = 3.0, -- Reduced from 4.0
-			[-20] = 2.6, -- Reduced from 3.5
-			[-10] = 2.2, -- Reduced from 3.0
-			[0] = 1.8, -- Reduced from 2.5
-			[10] = 1.5, -- Reduced from 2.0
-			[20] = 1.3, -- Reduced from 1.5
-			[30] = 1.15, -- Reduced from 1.25
-			[40] = 1.05, -- Reduced from 1.1
-			[50] = 1.02, -- Reduced from 1.05
-			[60] = 1.0,
-			[70] = 1.0,
-		}
-
-		-- Find the two closest temperature points
-		local lowerTemp = -40
-		local upperTemp = 80
-		local lowerEnrich = 3.0
-		local upperEnrich = 0.85
-
-		-- Find the two closest temperature points in the map
-		for temp, _ in pairs(enrichmentMap) do
-			if temp <= tempC and temp > lowerTemp then
-				lowerTemp = temp
-				lowerEnrich = enrichmentMap[temp]
-			end
-			if temp >= tempC and temp < upperTemp then
-				upperTemp = temp
-				upperEnrich = enrichmentMap[temp]
-			end
-		end
-
-		-- Linear interpolation between the two closest points
-		if lowerTemp == upperTemp then
-			return lowerEnrich
-		end
-
-		local t = (tempC - lowerTemp) / (upperTemp - lowerTemp)
-		return lowerEnrich + (upperEnrich - lowerEnrich) * t
-	end
 
 	-- Calculate cold start enrichment based on engine temperature
 	local coldStartEnrichment = getColdEnrichment(engineTempC)
@@ -1931,40 +1913,30 @@ end
 		end
 	end
 
-	-- Get all fuel and air values from carburetor if available
-	local fuelValues = {
-		baseFuelAmount = device.carburetor and device.carburetor.baseFuelAmount or 8.0,
-		maxFuelPerCylinder = device.carburetor and device.carburetor.maxFuelPerCylinder or 1.0,
-		minFuelForInjection = device.carburetor and device.carburetor.minFuelForInjection or 2.0,
-		minFuelForCombustion = device.carburetor and device.carburetor.minFuelForCombustion or 0.15,
-		minAirForCombustion = device.carburetor and device.carburetor.minAirForCombustion or 0.4,
-		fuelEnrichment = device.carburetor and device.carburetor.fuelEnrichment or 1.0,
-	}
+	-- Get fuel and air values from carburetor if available (no table allocation)
+	local carb = device.carburetor
+	local baseFuelAmount = carb and carb.baseFuelAmount or 8.0
+	local maxFuelPerCylinder = carb and carb.maxFuelPerCylinder or 1.0
+	local minFuelForInjection = carb and carb.minFuelForInjection or 2.0
+	local minFuelForCombustion = carb and carb.minFuelForCombustion or 0.15
+	local minAirForCombustion = carb and carb.minAirForCombustion or 0.4
+	local fuelEnrichment = carb and carb.fuelEnrichment or 1.0
 
-	-- Get values from carburetor if available
-	if device.carburetor and device.carburetor.getFuelValues then
-		local carbValues = device.carburetor:getFuelValues(engineTempC, isCranking)
-		fuelValues.baseFuelAmount = carbValues.baseFuelAmount
-		fuelValues.maxFuelPerCylinder = carbValues.maxFuelPerCylinder
-		fuelValues.minFuelForInjection = carbValues.minFuelForInjection
-		fuelValues.minFuelForCombustion = carbValues.minFuelForCombustion
-		fuelValues.minAirForCombustion = carbValues.minAirForCombustion
+	if carb and carb.getFuelValues then
+		local carbValues = carb:getFuelValues(engineTempC, isCranking)
+		baseFuelAmount = carbValues.baseFuelAmount
+		maxFuelPerCylinder = carbValues.maxFuelPerCylinder
+		minFuelForInjection = carbValues.minFuelForInjection
+		minFuelForCombustion = carbValues.minFuelForCombustion
+		minAirForCombustion = carbValues.minAirForCombustion
 	end
 
-	-- Get fuel enrichment from carburetor if available
-	if device.carburetor and device.carburetor.getFuelEnrichment then
-		fuelValues.fuelEnrichment = device.carburetor:getFuelEnrichment(engineTempC, isCranking, throttle)
+	if carb and carb.getFuelEnrichment then
+		fuelEnrichment = carb:getFuelEnrichment(engineTempC, isCranking, throttle)
 	end
 
 	-- Apply fuel enrichment to base fuel amount
-	local baseFuelAmount = fuelValues.baseFuelAmount * fuelValues.fuelEnrichment
-
-	-- Local references for cleaner code
-	local minFuelForCombustion = fuelValues.minFuelForCombustion
-	local minAirForCombustion = fuelValues.minAirForCombustion
-	local maxFuelPerCylinder = fuelValues.maxFuelPerCylinder
-	local minFuelForInjection = fuelValues.minFuelForInjection
-	local fuelEnrichment = fuelValues.fuelEnrichment
+	baseFuelAmount = baseFuelAmount * fuelEnrichment
 	-- Ignition assistance during cranking - more help when cold
 	local minIgnitionForCombustion = isCranking and (0.15 * (1.5 - (engineTempC / 100 * 0.8))) or 0.5
 
