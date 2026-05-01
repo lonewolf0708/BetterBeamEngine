@@ -1798,6 +1798,11 @@ local function updateTorque(device, dt)
 	-- Initialize choke effect if not set
 	device.chokeEffect = device.chokeEffect or 0
 
+	-- Update choking module state (tracks choke accumulator, throttle delta, hydrolock timer)
+	if chokeModule and chokeModule.update then
+		chokeModule.update(device, dt, electrics)
+	end
+
 	-- Per-cylinder flood parameters
 	local tempFactor = clamp((engineTempC + 30) / 80, 0.2, 1.8)
 	local coldEffect = math.max(0.2, 1.0 - ((engineTempC + 30) / 120))
@@ -1944,6 +1949,9 @@ local function updateTorque(device, dt)
 			device.isChoked = false
 		end
 	end
+
+	-- Store computed choke effect on device for use by choking module and fuel enrichment
+	device.chokeEffect = chokeEffect
 
 	local carb = device.carburetor
 	local baseFuelAmount = (carb and carb.baseFuelAmount) or 8.0
