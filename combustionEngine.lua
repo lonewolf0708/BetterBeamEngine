@@ -1805,7 +1805,7 @@ local function updateTorque(device, dt)
 	-- Get carburetor flood contribution (shared across all cylinders)
 	local carbFloodContribution = 0
 	if device.carburetor and device.carburetor.getFloodContribution then
-		carbFloodContribution = device.carburetor:getFloodContribution()
+		carbFloodContribution = device.carburetor:getFloodContribution(dt)
 	end
 
 	-- Get choking flood contribution

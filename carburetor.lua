@@ -73,7 +73,7 @@ local CARBURETOR_CONSTANTS = {
     -- Cranking combustion settings
     crankingCombustionThreshold = 0.05,  -- 5% float level
     crankingCombustionSoundVolume = 0.9,  -- Sound volume multiplier
-    crankingCombustionChance = 0.01,  -- Chance per second of a combustion event during cranking (10%)
+    crankingCombustionChance = 0.10,  -- Chance per second of a combustion event during cranking (10%)
     crankingCombustionBackfireChance = 0.05,  -- Chance per second of a backfire event during cranking (5%)
     crankingCombustionDuration = 0.1, -- Duration in seconds of a cranking combustion event
     crankingCombustionMinTemp = 0,   -- Minimum temperature (°F) for cranking combustion
@@ -345,10 +345,10 @@ function carburetor:handleInputs(inputs)
     -- Handle manual choke control
     if inputs and inputs.T then
         -- Increase choke position
-        self.manualChokePosition = math.min(self.maxManualChoke, self.manualChokePosition + self.manualChokeStep)
+        self.manualChokePosition = math.min(CARBURETOR_CONSTANTS.maxManualChoke, (self.manualChokePosition or 0) + CARBURETOR_CONSTANTS.manualChokeStep)
     elseif inputs and inputs.G then
         -- Decrease choke position
-        self.manualChokePosition = math.max(self.minManualChoke, self.manualChokePosition - self.manualChokeStep)
+        self.manualChokePosition = math.max(CARBURETOR_CONSTANTS.minManualChoke, (self.manualChokePosition or 0) - CARBURETOR_CONSTANTS.manualChokeStep)
     end
 end
 
@@ -856,33 +856,36 @@ function carburetor:getFloodLevel()
         floodLevel = self.floodingLevel
     end
     
-    -- Apply any additional flood factors (like from vapor lock)
-    floodLevel = math.min(1.0, floodLevel + (self.vaporizationLevel or 0) * 0.5)
+    -- Apply vapor lock flood factor only at extreme temperatures (genuine vapor lock)
+    if (self.vaporizationLevel or 0) > 0.5 then
+        floodLevel = math.min(1.0, floodLevel + (self.vaporizationLevel - 0.5) * 0.2)
+    end
     
     return floodLevel
 end
 
 -- Get the per-tick flood contribution for the per-cylinder system in combustionEngine.
 -- Returns a small delta (not an absolute level) that gets distributed across cylinders.
-function carburetor:getFloodContribution()
+function carburetor:getFloodContribution(dt)
     local contribution = 0
+    dt = dt or 0.0005
 
     -- Float bowl overflow contributes to flooding
     if self.floatLevel then
         local maxLevel = self.maxFloatLevel or CARBURETOR_CONSTANTS.maxFloatLevel
         if self.floatLevel > maxLevel then
-            contribution = contribution + math.min(0.02, (self.floatLevel - maxLevel) * 0.1)
+            contribution = contribution + math.min(0.02, (self.floatLevel - maxLevel) * 0.1) * dt
         end
     end
 
     -- Cranking-based flooding from the carburetor's own flooding tracking
     if self.floodingLevel and self.floodingLevel > 0.1 then
-        contribution = contribution + self.floodingLevel * 0.005
+        contribution = contribution + self.floodingLevel * 0.005 * dt
     end
 
-    -- Vapor lock contributes to flooding
+    -- Vapor lock contributes to flooding at extreme temperatures
     if (self.vaporizationLevel or 0) > 0.5 then
-        contribution = contribution + (self.vaporizationLevel - 0.5) * 0.01
+        contribution = contribution + (self.vaporizationLevel - 0.5) * 0.01 * dt
     end
 
     return contribution

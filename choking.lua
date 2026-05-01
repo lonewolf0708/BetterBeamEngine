@@ -61,7 +61,7 @@ local function getFloodContribution(self, device, dt)
     -- Choke-related flooding
     local accumulator = device.chokeFloodAccumulator or 0
     if accumulator > 0.1 then
-        contribution = contribution + accumulator * 0.003
+        contribution = contribution + accumulator * 0.003 * dt
     end
 
     -- Hydrolock contribution (water ingestion via intake when submerged)
