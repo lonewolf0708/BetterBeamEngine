@@ -220,6 +220,10 @@ function carburetor:new(device, floatLevel, chokeActive)
     carb.lastThrottle = 0
     carb.surgeSound = nil
     
+    -- Initialize idle valve and fuel mixture
+    carb.idleValvePosition = CARBURETOR_CONSTANTS.idleValveMinPosition
+    carb.fuelMixtureRatio = CARBURETOR_CONSTANTS.baseFuelMixture
+    
     -- Initialize accelerator pump state
     carb.acceleratorPumpFuel = 0
     carb.pumpSoundPlayed = false
@@ -319,8 +323,11 @@ end
 function carburetor:cleanOilBathFilter()
     if not self.isDiesel then return end
     
-    self.oilBathFilterDirty = false
-    self.oilBathFilterEfficiency = 1.0
+    self.oilBathFilterDirt = 0
+    if self.oilBathFilterSound then
+        self.oilBathFilterSound:stop()
+        self.oilBathFilterSound = nil
+    end
 end
 
 -- Adjust fuel mixture ratio
@@ -406,6 +413,9 @@ function carburetor:reset(floatLevel, chokeActive)
     -- Reset oil-bath air filter state if diesel
     if self.isDiesel then
         self.oilBathFilterDirt = 0
+        if self.oilBathFilterSound then
+            self.oilBathFilterSound:stop()
+        end
         self.oilBathFilterSound = nil
     end
     
