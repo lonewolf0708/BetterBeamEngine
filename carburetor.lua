@@ -683,22 +683,21 @@ function carburetor:onPostUpdate(params)
         local baseIdle = carb.device.baseIdleSpeed or (carb.device.idleRPM or 800)  -- Default to 800 RPM if neither is set
         
         -- Convert RPM to AV (angular velocity)
-        local targetAV = (baseIdle * (carb.idleMultiplier or 1) + (carb.idleOffset or 0)) * rpmToAV
+        local targetAV = (baseIdle * (1 + (carb.idleMultiplier or 0)) + (carb.idleOffset or 0)) * rpmToAV
         
-        -- Apply the idle speed override
+        -- Apply the idle speed override (do not zero idleAVStartOffset or idleAVReadError
+        -- as those are managed by the engine's idle roughness simulation)
         carb.device.idleAVOverwrite = targetAV
-        carb.device.idleAVStartOffset = 0  -- Reset start offset
-        carb.device.idleAVReadError = 0    -- Reset error
     end
     
     -- Update fuel usage with surge multiplier
     local surgeMultiplier = carb.isSurging and CARBURETOR_CONSTANTS.surgeFuelMultiplier or 1.0
     
-    -- Initialize fuelUsage if it doesn't exist
-    self.device.fuelUsage = self.device.fuelUsage or 0
-    
-    -- Calculate and update fuel usage with enrichment and surge multiplier
-    self.device.fuelUsage = self.device.fuelUsage * carb.fuelEnrichment * (1 + (carb.vaporizationLevel or 0) * 0.2) * surgeMultiplier
+    -- Derive base fuel usage from engine state (RPM and throttle)
+    -- device.spentEnergy is accumulated by combustionEngine each tick
+    local rpm = abs(engineAV or 0) * avToRPM
+    local baseFuelRate = (rpm / 1000) * (currentThrottle + 0.1) * 0.001
+    self.device.fuelUsage = baseFuelRate * carb.fuelEnrichment * (1 + (carb.vaporizationLevel or 0) * 0.2) * surgeMultiplier
     
     -- Store current throttle for next frame
     carb.lastThrottle = throttle
@@ -902,17 +901,13 @@ function carburetor:getIdleMultiplier()
     -- Apply temperature-based idle multiplier
     multiplier = multiplier * self:getTemperatureMultiplier(temp)
     
-    -- Apply choke multiplier if active
+    -- Apply choke effect with gradual pull-off reduction
+    -- Full choke boost at timer=0, reducing to 1.0 (no effect) at timer=chokePullOffTime
     if self.chokeActive then
         local params = self.params or CARBURETOR_CONSTANTS
-        multiplier = multiplier * (params.chokeIdleMultiplier or CARBURETOR_CONSTANTS.chokeIdleMultiplier)
-    end
-    
-    -- Apply choke pull-off effect if active
-    if self.chokePullOffActive then
-        local params = self.params or CARBURETOR_CONSTANTS
         local chokeMultiplier = params.chokeIdleMultiplier or CARBURETOR_CONSTANTS.chokeIdleMultiplier
-        multiplier = multiplier * (1 + (chokeMultiplier - 1) * (1 - self.chokePullOffTimer / CARBURETOR_CONSTANTS.chokePullOffTime))
+        local pullOffFraction = (self.chokePullOffTimer or 0) / CARBURETOR_CONSTANTS.chokePullOffTime
+        multiplier = multiplier * (1 + (chokeMultiplier - 1) * (1 - pullOffFraction))
     end
     
     -- Apply starvation effect if active
