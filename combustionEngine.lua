@@ -635,6 +635,7 @@ local function checkHydroLocking(device, dt)
 	end
 
 	-- Update damage tracker
+	device.isHydrolocking = isFlooding
 	damageTracker.setDamage("engine", "engineIsHydrolocking", isFlooding)
 
 	-- Calculate flooding/drying rates (now in 1% increments)

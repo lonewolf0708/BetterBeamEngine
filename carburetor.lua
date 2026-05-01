@@ -484,9 +484,6 @@ function carburetor:onPostUpdate(params)
         carb.pumpSoundPlayed = false
     end
     
-    -- Store current throttle for next frame
-    carb.lastThrottle = currentThrottle
-    
     -- Check if starter is engaged
     if carb.device.starterEngagedCoef == 1 then
         -- Check for momentary combustion during cranking
@@ -560,10 +557,10 @@ function carburetor:onPostUpdate(params)
     end
 
     -- Handle choke behavior based on temperature from params
-    local temp = kelvinToFahrenheit(engineTempC + 273.15)
+    local temp = kelvinToFahrenheit((engineTempC or 0) + 273.15)
     
     -- Disable choke when engine is warm/hot
-    if carb.disableChokeWhenWarm and temp >= carb.warmThreshold then
+    if CARBURETOR_CONSTANTS.disableChokeWhenWarm and temp >= CARBURETOR_CONSTANTS.warmThreshold then
         carb.chokeActive = false
         carb.chokePullOffTimer = 0
         carb.chokePullOffActive = false
@@ -896,7 +893,8 @@ function carburetor:getIdleMultiplier()
     local multiplier = 1.0
     
     -- Get engine temperature
-    local temp = self.device and self.device.thermals and self.device.thermals.engineBlockTemperature or 0
+    local tempC = self.device and self.device.thermals and self.device.thermals.engineBlockTemperature or 0
+    local temp = (tempC * 9/5) + 32
     
     -- Apply temperature-based idle multiplier
     multiplier = multiplier * self:getTemperatureMultiplier(temp)

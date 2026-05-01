@@ -65,7 +65,8 @@ local function getFloodContribution(self, device, dt)
     end
 
     -- Hydrolock contribution (water ingestion via intake when submerged)
-    if (device.hydrolockTimer or 0) > 0 and device.canFlood then
+    -- Only applies when actually submerged (isHydrolocking set by combustionEngine's checkHydroLocking)
+    if device.isHydrolocking and device.canFlood then
         contribution = contribution + 0.01 * dt
     end
 
