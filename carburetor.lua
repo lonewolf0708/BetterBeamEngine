@@ -507,7 +507,7 @@ function carburetor:onPostUpdate(params)
         end
         
         -- Check for backfire
-        if random() < CARBURETOR_CONSTANTS.crankingCombustionBackfireChance and 
+        if random() < CARBURETOR_CONSTANTS.crankingCombustionBackfireChance * dt and 
            self.device.playAfterFireSound and 
            type(self.device.playAfterFireSound) == 'function' then
             self.device:playAfterFireSound()
@@ -567,7 +567,7 @@ function carburetor:onPostUpdate(params)
     else
         -- Handle normal choke behavior
         if carb.chokeActive then
-            carb.chokePullOffTimer = carb.chokePullOffTimer + dt
+            carb.chokePullOffTimer = min(carb.chokePullOffTimer + dt, CARBURETOR_CONSTANTS.chokePullOffTime)
             if carb.chokePullOffTimer >= CARBURETOR_CONSTANTS.chokePullOffTime then
                 carb.chokePullOffActive = true
             end
@@ -600,7 +600,7 @@ function carburetor:onPostUpdate(params)
     carb.vaporizationLevel = carb.vaporizationLevel or 0
     
     -- Handle fuel vaporization with safe defaults
-    local vaporizationTempThreshold = CARBURETOR_CONSTANTS.vaporizationTempThreshold or 50  -- Default 50°C
+    local vaporizationTempThreshold = CARBURETOR_CONSTANTS.vaporizationTempThreshold or 122  -- Default 50°C = 122°F
     local vaporizationRate = CARBURETOR_CONSTANTS.vaporizationRate or 0.1  -- Default rate
     
     -- Only proceed if we have a valid temperature
