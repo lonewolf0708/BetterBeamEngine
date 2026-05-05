@@ -2506,6 +2506,11 @@ local function updateTorque(device, dt)
 				-- Apply choke enrichment (further reduced)
 				fuelAmount = fuelAmount * (1.0 + (device.chokeEffect * 0.2)) -- Reduced to 20% max extra fuel with choke
 
+				-- Ensure minimum fuel injection amount (applied BEFORE flood reduction
+				-- so flooding can actually reduce fuel below minimums)
+				fuelAmount = math.max(fuelAmount, minFuelForInjection)
+				fuelAmount = math.max(fuelAmount, minFuelForCombustion * 0.9)
+
 				-- Use per-cylinder flood level
 				local cylinderFlood = cylinder.floodLevel or 0
 
@@ -2520,14 +2525,6 @@ local function updateTorque(device, dt)
 				elseif cylinderFlood > 0.3 then
 					fuelAmount = fuelAmount * (1.0 - cylinderFlood * 1.5)
 				end
-
-				-- Ensure minimum fuel injection amount
-				fuelAmount = math.max(fuelAmount, minFuelForInjection)
-				
-				-- CRITICAL FIX: Ensure fuel meets minimum combustion requirements
-				-- At cold temps, minFuelForCombustion is higher than minFuelForInjection
-				-- This prevents misfires due to insufficient fuel for combustion
-				fuelAmount = math.max(fuelAmount, minFuelForCombustion * 0.9)  -- 90% of min for combustion to allow some leanness
 
 				-- Add fuel to cylinder with a minimum amount
 				local newFuel = math.min(maxFuelPerCylinder, cylinder.fuelAmount + fuelAmount * dt * 0.8)
