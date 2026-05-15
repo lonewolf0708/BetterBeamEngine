@@ -690,7 +690,7 @@ local function updateFuelUsage(device)
 	end
 
 	device.hasFuel = hasFuel
-	device.remainingFuelRatio = remainingFuelRatio / device.storageWithEnergyCounter
+	device.remainingFuelRatio = device.storageWithEnergyCounter > 0 and (remainingFuelRatio / device.storageWithEnergyCounter) or 0
 end
 
 local function updateGFX(device, dt)
@@ -2612,7 +2612,7 @@ local function updateTorque(device, dt)
 				device.knockLevel = (device.knockLevel or 0) + 0.2
 				if device.knockLevel > 1.0 then
 					-- Severe knock - reduce power
-					torque = torque * 1.1
+					torque = torque * 0.9
 				end
 			end
 		end
@@ -2842,7 +2842,7 @@ local function updateTorque(device, dt)
 					cylinder.fuelAmount = cylinder.fuelAmount - 0.04 -- Clear more fuel to help recover
 
 					-- Trigger a backfire effect occasionally
-					if math.random() < 0.3 and not isCranking then -- 30% chance of backfire when running
+					if math.random() < 0.3 then -- 30% chance of backfire during cranking
 						-- Play backfire sound
 						if device.engineMiscSounds and device.engineMiscSounds.starterSoundEngine then
 							local soundName = "event:>Engine>Backfire>Backfire_" .. math.random(1, 3)
@@ -3013,7 +3013,7 @@ local function updateTorque(device, dt)
 	end
 
 	-- Initialize or update engine coast down state
-	if device.starterEngagedCoef == 0 and not device.starterEngagedCoef == 1 then
+	if device.starterEngagedCoef == 0 and device.starterEngagedCoef ~= 1 then
 		device.coastDownRPM = device.outputAV1 * avToRPM
 		device.coastDownTime = 0
 	end
