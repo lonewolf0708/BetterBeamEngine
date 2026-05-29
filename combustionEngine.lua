@@ -2634,9 +2634,9 @@ local function updateTorque(device, dt)
 				-- Stronger oscillation based on temperature and RPM
 				local rpmFactor = math.min(1.0, math.abs(device.outputAV1) / (device.idleAV * 0.5))
 					-- local oscillation = math.sin(device.cyclePosition * (cylinderCount / 2))
-					* (0.3 + (tempSeverity * 0.7)) -- More oscillation when cold
-					* (1.0 - (rpmFactor * 0.8)) -- Less oscillation at higher RPM
-					* device.starterTorque
+					-- * (0.3 + (tempSeverity * 0.7)) -- More oscillation when cold
+					-- * (1.0 - (rpmFactor * 0.8)) -- Less oscillation at higher RPM
+					-- * device.starterTorque
 
 				-- Apply the misfire torque with stronger oscillation
 				local effectiveMisfireTorque = misfireTorque -- + oscillation
@@ -4836,6 +4836,7 @@ local function new(jbeamData)
 			and v.data[jbeamData.soundConfigExhaust]
 			and v.data[jbeamData.soundConfigExhaust].fundamentalFrequencyCylinderCount
 		)
+		or 6
 	device.cyclePosition = 0
 	-- fast
 	device.fastIgnitionErrorSmoother = newTemporalSmoothing(10, 10)
