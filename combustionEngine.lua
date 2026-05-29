@@ -2482,7 +2482,7 @@ local function updateTorque(device, dt)
 			local timeSinceLastFuel = device.cyclePosition - device.cylinders[i].lastFuelAddTime
 			local isReadyForFuel = timeSinceLastFuel > (isCranking and 0.47 or 0.2) -- More frequent injection when cranking
 
-			if (isStarting or isRunning) and isReadyForFuel then
+			if (isCranking or isRunning) and isReadyForFuel then
 				-- Calculate base fuel amount with all enrichment factors
 				local fuelAmount = baseFuelAmount * throttle
 
