@@ -2358,7 +2358,7 @@ local function updateTorque(device, dt)
 
 		-- Stage 0: Initial Surge (Short, strong kick to overcome inertia)
 		if device.startingHesitationPhase == 0 then
-			local initialCrankDuration = 10.2 + math.random() * 0.4 -- 0.6s to 1.0s surge
+			local initialCrankDuration = 0.6 + math.random() * 0.4 -- 0.6s to 1.0s surge
 			device.startingHesitationFactor = 1.3 -- Strong initial torque
 			if device.startingHesitationTime > initialCrankDuration then
 				device.startingHesitationPhase = 1 -- Move to struggle phase
@@ -2395,8 +2395,8 @@ local function updateTorque(device, dt)
 			end
 
 			-- Add occasional stronger hesitation (misfires)
-			if math.random() < 0.1 then
-				device.startingHesitationFactor = device.startingHesitationFactor * (0.2 + math.random() * 0.1) -- 20-30% of current factor
+			if math.random() < 0.03 then
+				device.startingHesitationFactor = device.startingHesitationFactor * (0.5 + math.random() * 0.2) -- 50-70% of current factor
 				if hesitationDebug then
 					log(
 						"D",
@@ -2411,7 +2411,7 @@ local function updateTorque(device, dt)
 
 			-- Transition to normal cranking after struggle duration
 			if device.startingHesitationTime > struggleDuration then
-				device.startingHesitationPhase = 1
+				device.startingHesitationPhase = 2
 				if hesitationDebug then
 					log(
 						"D",
@@ -2647,11 +2647,11 @@ local function updateTorque(device, dt)
 		if cylinder.isFiring then
 			-- Enhanced misfire effects with temperature-dependent severity
 			if cylinder.fuelAmount > minFuelForCombustion * 0.8 then -- Slightly more forgiving fuel threshold
-				-- Much stronger temperature-based severity - peaks at -20°C and below
-				local tempSeverity = math.min(1.0, math.max(0, (120 - engineTempC) / 20))
+				-- Temperature-based severity - peaks at -20°C and below
+				local tempSeverity = math.min(1.0, math.max(0, (20 - engineTempC) / 40))
 
-				-- Base torque reduction (30-80% of starter torque)
-				local baseReduction = 0.3 + (tempSeverity * 0.8)
+				-- Base torque reduction (10-50% of starter torque)
+				local baseReduction = 0.1 + (tempSeverity * 0.4)
 
 				-- Add randomness to severity (0.8x to 1.2x)
 				local randomFactor = 0.8 + (math.random() * 0.4)
@@ -2669,9 +2669,9 @@ local function updateTorque(device, dt)
                                                   device.invStarterMaxAV, -0.5),
                                           1)]]
 
-				-- Apply the misfire torque with stronger oscillation
+				-- Apply the misfire torque with oscillation
 				local effectiveMisfireTorque = misfireTorque -- + oscillation
-				torque = torque + device.starterTorque + effectiveMisfireTorque * 2
+				torque = torque + device.starterTorque + effectiveMisfireTorque * 0.8
 				-- More aggressive flood level increase when cold
 				if engineTempC < 20 then -- Increased from 10 to 20°C threshold
 					local tempFactor = math.max(0, (20 - engineTempC) / 20) -- 0 at 20°C, 1.0 at 0°C
