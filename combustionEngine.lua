@@ -6,7 +6,7 @@ local function onModuleLoad()
 	print("\n")
 	print("========================================")
 	print("CUSTOM COMBUSTION ENGINE SCRIPT LOADED!")
-	print("Version: 2.1")
+	print("Version: 3.4")
 	print("Author: BeamNG,lonewolf00708")
 	print("File: " .. debug.getinfo(1).source)
 	print("Time: " .. os.date())
@@ -14,14 +14,16 @@ local function onModuleLoad()
 	print("\n")
 end
 
+onModuleLoad()
+
 local M = {}
 
 M.outputPorts = { [1] = true } -- set dynamically
 M.deviceCategories = { engine = true }
 
 local delayLine = rerequire("delayLine")
---[[local carburetorModule = rerequire("lua/vehicle/powertrain/carburetor")
-local chokeModule = rerequire("lua/vehicle/powertrain/choking")]]
+local carburetorModule = rerequire("lua/vehicle/powertrain/carburetor")
+-- local chokeModule = rerequire("lua/vehicle/powertrain/choking")
 
 local max = math.max
 local min = math.min
@@ -34,10 +36,10 @@ local rpmToAV = 0.104719755
 local avToRPM = 9.549296596425384
 local torqueToPower = 0.0001404345295653085
 local psToWatt = 735.499
-local hydrolockThreshold = 1.9
+local hydrolockThreshold = 0.9
 
 local torqueDebug = false
-local hesitationDebug = true
+local hesitationDebug = false
 local starterDebug = false
 local debugBatt = false
 local debugFuel = false
@@ -109,7 +111,7 @@ local fuelProperties = {
 	},
 }
 
---[[local function checkFuelCompatibility(device)
+local function checkFuelCompatibility(device)
 	if not device.energyStorage then
 		return device.requiredEnergyType -- Default
 	end
@@ -119,7 +121,7 @@ local fuelProperties = {
 		return device.energyStorage
 	end
 
-	local fuelType = storage.energyType or "gasoline"
+	local fuelType = storage.energyType
 	local properties = fuelProperties[fuelType] or device.energyStorage
 
 	if fuelType ~= device.requiredEnergyType then
@@ -139,7 +141,7 @@ local fuelProperties = {
 	end
 
 	return properties
-end]]
+end
 
 local function getTorqueData(device)
 	local curves = {}
@@ -418,7 +420,8 @@ local function getTorqueData(device)
 		for k, v in pairs(device.torqueCurve) do
 			if type(k) == "number" and k < maxRPM then
 				torqueCurveFinal[k + 1] = (
-					v * (turboCoefs[k] or 0) * (superchargerCoefs[k] or 0) + (nitrousTorques[k] or 0)
+					v * (turboCoefs[k] or 0) * (superchargerCoefs[k] or 0)
+					+ (nitrousTorques[k] or 0)
 				)
 					- device.friction * device.wearFrictionCoef * device.damageFrictionCoef
 					- (
@@ -517,8 +520,7 @@ local function enable(device)
 	device.outputTorqueState = 1
 	device.isDisabled = false
 	device.starterDisabled = false
-	device.lastMisfireTime = 0
-	device.misfireActive = false
+
 	damageTracker.setDamage("engine", "engineDisabled", false)
 end
 
@@ -575,12 +577,11 @@ local function updateSounds(device, dt)
 end
 
 local function checkHydroLocking(device, dt)
-	-- Check if already hydrolocked
 	if device.floodLevel > hydrolockThreshold then
 		return
 	end
 
-	-- Check if engine can flood and all water damage nodes are underwater
+	-- engine starts flooding if ALL of the waterDamage nodes are underwater
 	local isFlooding = device.canFlood
 	for _, n in ipairs(device.waterDamageNodes) do
 		isFlooding = isFlooding and obj:inWater(n)
@@ -590,6 +591,7 @@ local function checkHydroLocking(device, dt)
 	end
 
 	-- Update damage tracker
+	device.isHydrolocking = isFlooding
 	damageTracker.setDamage("engine", "engineIsHydrolocking", isFlooding)
 
 	-- Calculate flooding/drying rates (now in 1% increments)
@@ -608,6 +610,7 @@ local function checkHydroLocking(device, dt)
 	-- Check for hydrolock condition
 	if device.floodLevel > hydrolockThreshold then
 		damageTracker.setDamage("engine", "engineHydrolocked", true)
+		-- avoid piston movement, simulate broken connecting rods
 		device:lockUp()
 		guihooks.message("vehicle.combustionEngine.engineHydrolocked", 4, "vehicle.damage.flood")
 		return
@@ -636,8 +639,8 @@ local function checkHydroLocking(device, dt)
 				}, 4, "vehicle.damage.flood")
 			end
 		end
-		device.prevFloodPercent = currPercent
 	end
+	device.prevFloodPercent = currPercent
 end
 
 local function updateEnergyStorageRatios(device)
@@ -689,7 +692,17 @@ local function updateFuelUsage(device)
 	end
 
 	device.hasFuel = hasFuel
-	device.remainingFuelRatio = remainingFuelRatio / device.storageWithEnergyCounter
+	device.remainingFuelRatio = device.storageWithEnergyCounter > 0
+			and (remainingFuelRatio / device.storageWithEnergyCounter)
+		or 0
+end
+
+local function getEnginePerformanceFactor(device)
+	local engineTempC = (device.thermals and device.thermals.engineBlockTemperature) or 20
+	-- Calculate performance factor based on temperature
+	-- Colder engines have lower performance factor (longer cranking time)
+	-- Warmer engines have higher performance factor (shorter cranking time)
+	return linearScale(engineTempC, -60, 45, 2.0, 1.0)
 end
 
 local function updateGFX(device, dt)
@@ -701,11 +714,11 @@ local function updateGFX(device, dt)
 		if shouldBuzzerBeActive and not device.stallBuzzerActive then
 			obj:playSFX(device.stallBuzzerSoundID) -- Play the persistent source
 			device.stallBuzzerActive = true
-			-- log('D', 'StallBuzzer', 'Buzzer ON') -- Optional debug
+			-- log('D', 'StallBuzzer', 'Buzzer ON') --Optional debug
 		elseif not shouldBuzzerBeActive and device.stallBuzzerActive then
 			obj:stopSFX(device.stallBuzzerSoundID) -- Stop the persistent source
 			device.stallBuzzerActive = false
-			-- log('D', 'StallBuzzer', 'Buzzer OFF') -- Optional debug
+			-- log('D', 'StallBuzzer', 'Buzzer OFF') --Optional debug
 		end
 
 		-- Adjust pitch if the buzzer is active
@@ -729,12 +742,18 @@ local function updateGFX(device, dt)
 	if device.starterEngagedCoef > 0 then
 		-- Initialize hesitation timer if not already set
 		if not device.starterThrottleKillTimerStart or device.starterThrottleKillTimerStart == 0 then
+			-- Determine engine performance factor (e.g., based on current RPM or load)
+			local enginePerformanceFactor = getEnginePerformanceFactor(device)
+
 			-- Scale hesitation period with temperature - colder = longer cranking time
-			local baseHesitationTime = 12.0 -- Base time at normal temps (20°C)
+			local baseHesitationTime = 20.0 -- Base time at normal temps (20°C)
 			local engineTempC = (device.thermals and device.thermals.engineBlockTemperature) or 20
-			-- Temp factor: 0 at 20°C, increases as temp drops, max 1.5x at -20°C or below
-			local tempFactor = math.max(0, math.min(1.5, (20 - engineTempC) / 40))
-			device.starterThrottleKillTimerStart = baseHesitationTime * (1 + tempFactor)
+			-- Temp factor: 0 at 20°C, increases as temp drops, max 50.5x at -70°C or below
+			local tempFactor = math.max(0, math.min(50.5, (70 - engineTempC) / 40))
+
+			-- Adjust hesitation time based on engine performance factor
+			local adjustedHesitationTime = baseHesitationTime * (1 + tempFactor) * enginePerformanceFactor
+			device.starterThrottleKillTimerStart = adjustedHesitationTime
 			device.starterThrottleKillTimer = device.starterThrottleKillTimerStart
 		end
 
@@ -760,7 +779,9 @@ local function updateGFX(device, dt)
 
 		-- use lower starter max av multiplier in case the engine just doesnt start
 		-- occasionally this would result in the engine starting and immediately shutting down, so its disabled
-		local starterMaxAVMultiplier = 1.1 -- math.min(1.1, device.outputAV1/device.starterMaxAV+(device.starterThrottleKillTimer == 0 and 0 or math.max(2.0, 1.1)))
+		local dynamicMultiplier = device.outputAV1 / device.starterMaxAV
+			+ (device.starterThrottleKillTimer == 0 and 0 or 2.0)
+		local starterMaxAVMultiplier = math.min(1.1, math.max(0.01, dynamicMultiplier))
 
 		-- Initialize smoothed pitch value if not exists
 		device.smoothedPitch = device.smoothedPitch or 0.5
@@ -774,14 +795,14 @@ local function updateGFX(device, dt)
 		local curvedRatio = math.log(1 + rpmRatio * 2) / math.log(3)
 
 		-- Set pitch range for more natural sound
-		local minPitch = 0.0 -- Lower minimum pitch for deeper sound at low RPM
+		local minPitch = 0.01 -- Lower minimum pitch for deeper sound at low RPM
 		local maxPitch = 0.8 -- Slightly reduced max pitch for more realism
 
 		-- Calculate final pitch with limits and apply a small offset to prevent extreme lows
 		local targetPitch = minPitch + (maxPitch - minPitch) * curvedRatio
 
 		-- Apply smoothing to prevent sudden pitch changes
-		local smoothingFactor = 0.25
+		local smoothingFactor = 0.15
 		device.smoothedPitch = device.smoothedPitch or targetPitch
 		device.smoothedPitch = device.smoothedPitch + (targetPitch - device.smoothedPitch) * smoothingFactor
 
@@ -815,7 +836,7 @@ local function updateGFX(device, dt)
 	local engineBlockTemp = device.thermals and device.thermals.engineBlockTemperature or 20
 	local ignitionLevel = electrics.values.ignitionLevel or 0
 
-	if device.isDieselEngine then
+	if device.requiredEnergyType == "diesel" then
 		-- State Machine Transitions
 		if ignitionLevel <= 0 then
 			if glow.state ~= "off" then
@@ -1105,7 +1126,8 @@ local function updateGFX(device, dt)
 
 	local lowFuelIgnitionErrorChance = linearScale(device.remainingFuelRatio, 0.01, 0, 0, 0.4)
 	local fastIgnitionErrorCoef = device.fastIgnitionErrorSmoother:getUncapped(math.random(), dt)
-	device.fastIgnitionErrorCoef = fastIgnitionErrorCoef < (device.fastIgnitionErrorChance + lowFuelIgnitionErrorChance)
+	device.fastIgnitionErrorCoef = fastIgnitionErrorCoef
+				< (device.fastIgnitionErrorChance + lowFuelIgnitionErrorChance)
 			and 0
 		or 1
 
@@ -1323,7 +1345,7 @@ local function updateGFX(device, dt)
 		not device.isDisabled
 		and (
 			frictionTorque > device.maxTorque
-			or (device.outputAV1 < device.idleAV * 1.1 and frictionTorque > idleTorque * 0.95)
+			or (device.outputAV1 < device.idleAV * 0.5 and frictionTorque > idleTorque * 0.95)
 		)
 	then
 		-- if our friction is higher than the biggest torque we can output, the engine WILL lock up automatically
@@ -1434,6 +1456,12 @@ local function updateGFX(device, dt)
 	device.sustainedAfterFireFuel = 0
 	device.shiftAfterFireFuel = 0
 	device.continuousAfterFireFuel = 0
+
+	---temp code to send current power to fmod---
+	local currentCombustionPowerkW = device.combustionTorque * device.outputAV1 * 0.001
+	device:setEngineSoundParameter(device.engineSoundIDExhaust, "currentPower", currentCombustionPowerkW, "exhaust")
+	device:setEngineSoundParameter(device.engineSoundID, "currentPower", currentCombustionPowerkW, "engine")
+	-- end temp code---
 end
 
 local function setTempRevLimiter(device, revLimiterAV, maxOvershootAV)
@@ -1532,14 +1560,12 @@ end
 local function updateTorque(device, dt)
 	local recoveryFloodThreshold = 0.2
 	local floodStartThreshold = 0.1
-	local maxFloodThreshold = 1
+	local maxFloodThreshold = 2
 	local minNormalFlood = 0.3
 
-	local isStarting = (device.startingHesitationPhase < 3)
-	local isRunning = (math.abs(device.outputAV1) > 600 * (math.pi / 30)) -- ~600 RPM threshold for running
-	local isCranking = device.starterEngagedCoef > 0
-		and math.abs(device.outputAV1) < 600 * (math.pi / 30)
-		and not isRunning -- Prevent cranking state when engine is running
+	local isStalled = device.starterEngagedCoef < 1
+	local isRunning = device.outputAV1 > device.starterMaxAV * 1.8 -- ~600 RPM threshold for running
+	local isCranking = device.starterEngagedCoef > 0 and not isRunning -- Prevent cranking state when engine is running
 
 	local isFlooded = device.floodLevel > (maxFloodThreshold or 1) -- Adjust threshold as needed
 	local engineAV = device.outputAV1
@@ -1569,7 +1595,8 @@ local function updateTorque(device, dt)
 	throttle = device:applyRevLimiter(engineAV, throttle, dt)
 
 	-- smooth our actual throttle value to simulate various effects in a real engine that do not allow immediate throttle changes
-	throttle = device.throttleSmoother:getUncapped(throttle, dt) -- * 1.2
+	throttle = device.throttleSmoother:getUncapped(throttle, dt)
+
 	local finalFriction = device.friction * device.wearFrictionCoef * device.damageFrictionCoef
 	local finalDynamicFriction = device.dynamicFriction
 		* device.wearDynamicFrictionCoef
@@ -1632,7 +1659,8 @@ local function updateTorque(device, dt)
 	device.engineLoad = device.loadSmoother:getCapped(device.instantEngineLoad, dt)
 	local normalizedEngineAV = clamp(engineAV / device.maxAV, 0, 1)
 	local revLimiterActive = device.revLimiterWasActiveTimer < 0.1
-	device.exhaustFlowCoef = revLimiterActive and (device.revLimiterActiveMaxExhaustFlowCoef * normalizedEngineAV)
+	device.exhaustFlowCoef = revLimiterActive
+			and (device.revLimiterActiveMaxExhaustFlowCoef * normalizedEngineAV)
 		or device.engineLoad
 
 	local absEngineAV = abs(engineAV)
@@ -1683,7 +1711,8 @@ local function updateTorque(device, dt)
 	local batteryVoltageFactor = electrics.values.batteryVoltageFactor or 1.0
 
 	-- Calculate peak starter torque using original multipliers
-	local maxTorqueAtZeroRPM = isDiesel and (device.starterTorque or device.starterMaxAV * 18.95)
+	local maxTorqueAtZeroRPM = isDiesel
+			and (device.starterTorque or device.starterMaxAV * 18.95)
 		or (device.starterTorque or device.starterMaxAV * 17.66)
 	if device.starterTorqueOverride and device.starterTorqueOverride > 0 then
 		maxTorqueAtZeroRPM = device.starterTorqueOverride
@@ -1708,7 +1737,10 @@ local function updateTorque(device, dt)
 
 	-- Speed-based torque reduction
 	local engineSpeedFactor = math.max(0, 1 - math.abs(engineAV) * device.invStarterMaxAV)
-	local baseStarterTorque = device.starterEngagedCoef	* finalMaxTorque * engineSpeedFactor * (device.startingHesitationFactor or 1.0)
+	local baseStarterTorque = device.starterEngagedCoef
+		* finalMaxTorque
+		* engineSpeedFactor
+		* (device.startingHesitationFactor or 1.0)
 
 	-- Add extra resistance during initial engagement and when cold
 	if device.starterEngageTimer and device.starterEngageTimer > 0.25 then
@@ -1720,15 +1752,21 @@ local function updateTorque(device, dt)
 	-- Calculate final starter torque with velocity-based reduction and engagement
 	-- Multiplies starter engagement (0-1) by base torque, then scales based on engine speed
 
-	-- Initialize compression and cylinder states if not exists
+	-- Different torque curves for diesel vs gasoline engines
+	local maxTorqueAtZeroRPM, minTorqueAtHighRPM
+
+	--[[ Initialize compression and cylinder states if not exists
 	device.compressionOscTimer = device.compressionOscTimer or 0
 	device.compressionState = device.compressionState or 0
-	device.compressionStateTimer = device.compressionStateTimer or 0
+	device.compressionStateTimer = device.compressionStateTimer or 0]]
+
+	-- Store the last starter engaged state for next frame
+	device.lastStarterEngagedCoef = device.starterEngagedCoef
 
 	-- Initialize per-cylinder fuel and combustion state
 	if not device.cylinders then
 		device.cylinders = {}
-		local cylinderCount = device.fundamentalFrequencyCylinderCount or 4
+		local cylinderCount = device.fundamentalFrequencyCylinderCount
 		for i = 1, cylinderCount do
 			device.cylinders[i] = {
 				fuelAmount = 0, -- Amount of fuel in cylinder (0-1)
@@ -1798,7 +1836,7 @@ local function updateTorque(device, dt)
 		if throttle > 0.8 then
 			recoveryMultiplier = recoveryMultiplier * 2
 		end -- Clear flood mode
-		floodChangeRate = -floodRecoveryRate * dt * 10 * recoveryMultiplier
+		floodChangeRate = -floodRecoveryRate * 10 * recoveryMultiplier
 	end
 
 	-- Apply flood changes with some randomness and smoothing
@@ -1824,30 +1862,30 @@ local function updateTorque(device, dt)
 	-- Debug settings with rate limiting and more detailed output
 	device.lastFloodLogTime = device.lastFloodLogTime or 0
 	local currentTime = os.clock()
-if debugFuel and (currentTime - device.lastFloodLogTime) > 2.0 then
-    -- Only log if something interesting is happening
-    if device.floodLevel > 0.05 and isCranking then
-        -- Calculate current torque reduction for debugging
-        local floodTorqueReduction = math.min(0.75, (device.floodLevel * 1.5) * 0.5)
-        local remainingTorque = (1 - floodTorqueReduction) * 100
-        
-        -- Log comprehensive flood info
-        log(
-            "I",
-            "Flooding",
-            string.format(
-                "Flood: %.1f%% | Torque Loss: %.1f%% | Remaining: %.1f%% | RPM: %.1f | Cranking: %s",
-                device.floodLevel * 100,
-                floodTorqueReduction * 100,
-                remainingTorque,
-                math.abs(device.outputAV1) * 9.5493,
-                tostring(isCranking)
-            )
-        )
-        
-        device.lastFloodLogTime = currentTime
-    end
-end
+	if debugFuel and (currentTime - device.lastFloodLogTime) > 2.0 then
+		-- Only log if something interesting is happening
+		if device.floodLevel > 0.05 and isCranking then
+			-- Calculate current torque reduction for debugging
+			local floodTorqueReduction = math.min(0.75, (device.floodLevel * 1.5) * 0.5)
+			local remainingTorque = (1 - floodTorqueReduction) * 100
+
+			-- Log comprehensive flood info
+			log(
+				"I",
+				"Flooding",
+				string.format(
+					"Flood: %.1f%% | Torque Loss: %.1f%% | Remaining: %.1f%% | RPM: %.1f | Cranking: %s",
+					device.floodLevel * 100,
+					floodTorqueReduction * 100,
+					remainingTorque,
+					math.abs(device.outputAV1) * 9.5493,
+					tostring(isCranking)
+				)
+			)
+
+			device.lastFloodLogTime = currentTime
+		end
+	end
 	-- Engine state flags - more accurate state detection
 
 	-- Temperature handling - engine temperatures are in Celsius
@@ -1876,7 +1914,7 @@ end
 		}
 
 		-- Find the two closest temperature points
-		local lowerTemp = -40
+		local lowerTemp = -20
 		local upperTemp = 80
 		local lowerEnrich = 3.0
 		local upperEnrich = 0.85
@@ -1910,12 +1948,12 @@ end
 	local chokeThrottleBoost = 0
 
 	-- Check if we should automatically engage choke based on temperature
-	local shouldAutoChoke = (engineTempC < 40) and (isCranking or isStarting)
+	local shouldAutoChoke = (engineTempC < 40) and (isCranking or isStalled)
 
 	-- If carburetor has choke control, use it
 	if device.carburetor and device.carburetor.getChokeState then
 		-- Let carburetor handle choke logic if available
-		local chokeState = device.carburetor:getChokeState(engineTempC, isCranking, isStarting)
+		local chokeState = device.carburetor:getChokeState(engineTempC, isCranking, isStalled)
 		device.isChoked = chokeState.isActive
 		chokeEffect = chokeState.effect or 0
 		chokeThrottleBoost = chokeState.throttleBoost or 0
@@ -1969,55 +2007,55 @@ end
 
 	-- Enhanced compression oscillation with more realistic behavior
 	-- Base oscillation speed scales with engine speed and cylinder count
-	local oscSpeed = device.fundamentalFrequencyCylinderCount * 1.5
+	-- local oscSpeed = device.fundamentalFrequencyCylinderCount * 1.5
 
 	-- More dynamic engine speed factor with better low-speed response
-	local engineSpeedFactor = math.min(math.pow(math.abs(engineAV) * 0.9, 0.6), 300)
+	-- local engineSpeedFactor = math.min(math.pow(math.abs(engineAV) * 0.9, 0.6), 300)
 
 	-- Update oscillation timer with smooth acceleration/deceleration
 	-- Initialize compression and cylinder states if not exists
-	device.compressionOscTimer = device.compressionOscTimer or 0
+	--[[device.compressionOscTimer = device.compressionOscTimer or 0
 	device.compressionState = device.compressionState or 0
 	device.compressionStateTimer = device.compressionStateTimer or 0
 	local targetOscSpeed = (engineSpeedFactor + oscSpeed) * 1.5
 	device.compressionOscTimer = (device.compressionOscTimer + dt * targetOscSpeed) % (math.pi * 2)
 
-	-- Create primary oscillation with sharper peaks and flatter valleys
+	--Create primary oscillation with sharper peaks and flatter valleys
 	local oscFactor = math.sin(device.compressionOscTimer)
 	local oscFactorSharp = math.pow(math.abs(oscFactor), 0.6) * (oscFactor >= 0 and 1 or -1)
 
-	-- Add multiple harmonics for complex, realistic oscillation
-	local oscFactor2 = math.sin(device.compressionOscTimer * 1.1) * 0.4 -- Slightly detuned for beating effect
-	local oscFactor3 = math.sin(device.compressionOscTimer * 0.5) * 0.25 -- Sub-harmonic for low-end rumble
+	--Add multiple harmonics for complex, realistic oscillation
+	local oscFactor2 = math.sin(device.compressionOscTimer * 1.1) * 0.4 --Slightly detuned for beating effect
+	local oscFactor3 = math.sin(device.compressionOscTimer * 0.5) * 0.25 --Sub-harmonic for low-end rumble
 
-	-- Blend harmonics with emphasis on primary oscillation
+	--Blend harmonics with emphasis on primary oscillation
 	local combinedOscFactor = (oscFactorSharp * 0.7) + (oscFactor2 * 0.2) + (oscFactor3 * 0.1)
 
-	-- Add compression pulses that align with cylinder firing order
+	--Add compression pulses that align with cylinder firing order
 	local compressionPulse = 0
-	local cylinderCount = device.fundamentalFrequencyCylinderCount or 4 -- Default to 4 cylinders if not set
+	local cylinderCount = device.fundamentalFrequencyCylinderCount --Default to 4 cylinders if not set
 	local pulsePhase = (device.compressionOscTimer % (math.pi * 2 / cylinderCount)) / (math.pi * 2 / cylinderCount)
 
-	-- Create more pronounced compression pulses with realistic timing
+	--Create more pronounced compression pulses with realistic timing
 	if pulsePhase > 0.9 and pulsePhase < 1.1 then
-		local pulseStrength = 0.8 + math.random() * 0.4 -- Random variation in pulse strength
-		-- Shape the pulse with a smooth curve
+		local pulseStrength = 0.8 + math.random() * 0.4 --Random variation in pulse strength
+		--Shape the pulse with a smooth curve
 		local pulseShape = math.sin((pulsePhase - 0.9) * (math.pi / 0.2) * 0.5)
 		compressionPulse = pulseStrength * pulseShape * pulseShape
 	end
 
-	-- Combine base oscillation with compression pulses
-	-- Apply stronger temperature effect - VISUAL shake matches internal resistance
-	local normalizedTemp = math.max(0, math.min(1, (engineTempC + 20) / 100)) -- Normalize -20°C to 80°C to 0-1 range
-	-- More aggressive temperature curve: 0.2-1.2 multiplier
+	--Combine base oscillation with compression pulses
+	--Apply stronger temperature effect - VISUAL shake matches internal resistance
+	local normalizedTemp = math.max(0, math.min(1, (engineTempC + 20) / 100)) --Normalize -20°C to 80°C to 0-1 range
+	--More aggressive temperature curve: 0.2-1.2 multiplier
 	local tempEffect = 1.2 - (1 - normalizedTemp) * 1.0
 
-	-- Invert for VISUAL resistance (more shake when cold)
+	--Invert for VISUAL resistance (more shake when cold)
 	local resistanceFactor = (2.0 - tempEffect)
 	combinedOscFactor = combinedOscFactor * 1.8 * resistanceFactor + compressionPulse * 0.8
 
-	-- Apply a soft clip to prevent extreme values while maintaining peak shape
-	combinedOscFactor = math.atan(combinedOscFactor * 0.5) * 1.5
+	--Apply a soft clip to prevent extreme values while maintaining peak shape
+	combinedOscFactor = math.atan(combinedOscFactor * 0.5) * 1.5]]
 
 	-- Get battery parameters
 	local is24V = device.batterySystemVoltage == 24
@@ -2157,8 +2195,8 @@ end
 
 	-- Update fuel properties periodically (e.g., every 100 frames)
 	device.fuelUpdateTimer = (device.fuelUpdateTimer or 0) + 1
-	--[[if device.fuelUpdateTimer >= 100 then
-	    device.currentFuelProperties = checkFuelCompatibility(device)
+	if device.fuelUpdateTimer >= 100 then
+		device.currentFuelProperties = checkFuelCompatibility(device)
 		device.fuelEffectFactor = device.currentFuelProperties.energyDensity
 
 		-- Check for fuel compatibility and define cumulative damage rates
@@ -2190,7 +2228,7 @@ end
 			end
 		end
 		device.fuelUpdateTimer = 0
-	end]]
+	end
 
 	-- Apply fuel-based damage to engine integrity
 	if device.fuelDamageRate > 0 and isEngineRunning then
@@ -2302,7 +2340,7 @@ end
 	end
 
 	-- Check if we just started cranking
-	local isCranking = device.starterEngagedCoef > 0.1
+	local isCranking = device.ignitionLevel == 3
 	local justStartedCranking = isCranking and not device.lastStarterState
 	device.lastStarterState = isCranking
 
@@ -2320,7 +2358,7 @@ end
 
 		-- Stage 0: Initial Surge (Short, strong kick to overcome inertia)
 		if device.startingHesitationPhase == 0 then
-			local initialCrankDuration = 0.2 + math.random() * 0.4 -- 0.6s to 1.0s surge
+			local initialCrankDuration = 10.2 + math.random() * 0.4 -- 0.6s to 1.0s surge
 			device.startingHesitationFactor = 1.3 -- Strong initial torque
 			if device.startingHesitationTime > initialCrankDuration then
 				device.startingHesitationPhase = 1 -- Move to struggle phase
@@ -2337,14 +2375,14 @@ end
 			-- Phase 1: Struggle phase (extended duration)
 		elseif device.startingHesitationPhase == 1 then
 			local coldFactor = math.max(0, math.min(1, (20 - (engineTempC or 20)) / 40)) -- 0 at 20°C, 1 at -20°C
-			local struggleDuration = 3.0 + coldFactor * 3.0 + math.random() * 1.0 -- 3-4s warm, up to 7s very cold
+			local struggleDuration = 3.0 + coldFactor * 3.0 + math.random() * 3.0 -- 3-4s warm, up to 7s very cold
 
 			-- Create a pulsing effect during struggle
-			local pulseFreq = math.random(1.0, 30.0) -- random frequency between 1 and 30 Hz
+			local pulseFreq = math.random(20.0, 30.0) -- random frequency between 20 and 30 Hz
 			local pulse = (math.sin(device.startingHesitationTime * math.pi * 8 * pulseFreq) + 1) * 0.5 -- 0-1 pulse
 
 			-- Base hesitation effect (lower torque during struggle)
-			device.startingHesitationFactor = 0.7 + pulse * 0.25 -- 70-95% torque
+			device.startingHesitationFactor = 0.7 + pulse * 0.3 -- 70-95% torque
 			if hesitationDebug then
 				log(
 					"D",
@@ -2373,7 +2411,7 @@ end
 
 			-- Transition to normal cranking after struggle duration
 			if device.startingHesitationTime > struggleDuration then
-				device.startingHesitationPhase = 2
+				device.startingHesitationPhase = 1
 				if hesitationDebug then
 					log(
 						"D",
@@ -2402,12 +2440,12 @@ end
 			end
 			device.startingHesitationFactor = 0.0
 		else
-			device.startingHesitationFactor = 1.0
+			device.startingHesitationFactor = 2.0
 			if hesitationDebug then
 				log(
 					"D",
 					"startingHesitation",
-					"Not cranking, factor set to 1.0 for device: " .. (device.name or "unknown")
+					"Not cranking, factor set to 2.0 for device: " .. (device.name or "unknown")
 				)
 			end
 		end
@@ -2436,7 +2474,7 @@ end
 	end
 
 	-- Get number of cylinders and update cycles (Always run while engine is active)
-	local cylinderCount = device.fundamentalFrequencyCylinderCount or jbeamData.cylinderCount or 8
+	local cylinderCount = device.fundamentalFrequencyCylinderCount or 8
 	device.cyclePosition = (device.cyclePosition or 0) + (math.abs(device.outputAV1) * dt)
 	device.cyclePosition = device.cyclePosition % (4 * math.pi)
 
@@ -2444,7 +2482,7 @@ end
 	local cyclePosPerCylinder = (4 * math.pi) / cylinderCount
 	local currentCylinder = math.floor(device.cyclePosition / cyclePosPerCylinder) + 1
 
-	-- Define base torque reference for failure subtractions
+	-- Define base torque reference for per-cylinder torque contributions
 	local baseCombustionTorque = (device.torqueCurve[floor(math.abs(device.outputAV1) * avToRPM)] or 0)
 		* (device.intakeAirDensityCoef or 1.0)
 
@@ -2465,23 +2503,23 @@ end
 
 		-- Handle fuel injection during intake stroke
 		-- Reduced throttle gate to allow idle fueling (State-based gate instead)
-		if stroke == 0 and not cylinder.isFiring and (isStarting or isRunning or throttle > 0) then
+		if stroke == 0 and not cylinder.isFiring and (isStalled or isRunning or throttle > 0) then
 			-- Check if we should be adding fuel
-			local timeSinceLastFuel = (device.cyclePosition - (cylinder.lastFuelAddTime or -10))
-			local isReadyForFuel = timeSinceLastFuel > (isCranking and 0.47 or 0.2) -- More frequent injection when cranking
+			local timeSinceLastFuel = device.cyclePosition - device.cylinders[i].lastFuelAddTime
+			local isReadyForFuel = timeSinceLastFuel < (isCranking and 0.0047 or 0.002) -- More frequent injection when cranking
 
-			if (isStarting or isRunning) and isReadyForFuel then
+			if (isStalled or isRunning) and isReadyForFuel then
 				-- Calculate base fuel amount with all enrichment factors
 				local fuelAmount = baseFuelAmount * throttle
-				
+
 				-- Ensure minimum fuel at low throttle to prevent lean misfires
 				-- Especially important during cold starts and idle
 				if throttle < 0.1 then
-					fuelAmount = math.max(fuelAmount, baseFuelAmount * 0.15)  -- Minimum 15% of base fuel at very low throttle
+					fuelAmount = math.max(fuelAmount, baseFuelAmount * 0.15) -- Minimum 15% of base fuel at very low throttle
 				end
 
 				-- Apply cranking enrichment when cranking (reduced from original)
-				if isCranking then
+				if isCranking and isReadyForFuel then
 					local crankingMultiplier = device.carburetor and device.carburetor.constants.crankingFuelMultiplier
 						or 1.5
 					fuelAmount = fuelAmount * (crankingMultiplier * 0.7) -- Reduced by 30%
@@ -2499,7 +2537,7 @@ end
 				local cylinderFlood = device.floodLevel
 
 				-- Reduce fuel if cylinder is flooded (more forgiving thresholds)
-				if cylinderFlood > 0.8 then -- Increased threshold from 0.7
+				if cylinderFlood > 1 then -- Increased threshold from 0.7
 					-- Reduce fuel significantly but don't cut completely
 					fuelAmount = fuelAmount * 0.3 -- Reduced from 0 to 0.3 (30% fuel)
 
@@ -2514,14 +2552,14 @@ end
 
 				-- Ensure minimum fuel injection amount
 				fuelAmount = math.max(fuelAmount, minFuelForInjection)
-				
+
 				-- CRITICAL FIX: Ensure fuel meets minimum combustion requirements
 				-- At cold temps, minFuelForCombustion is higher than minFuelForInjection
 				-- This prevents misfires due to insufficient fuel for combustion
-				fuelAmount = math.max(fuelAmount, minFuelForCombustion * 0.9)  -- 90% of min for combustion to allow some leanness
+				fuelAmount = math.max(fuelAmount, minFuelForCombustion * 0.9) -- 90% of min for combustion to allow some leanness
 
 				-- Add fuel to cylinder with a minimum amount
-				local newFuel = math.min(maxFuelPerCylinder, cylinder.fuelAmount + fuelAmount * dt * 0.8)
+				local newFuel = math.min(maxFuelPerCylinder, cylinder.fuelAmount + fuelAmount * dt * 0.08)
 
 				-- Debug output for fuel addition with rate limiting
 				if debugFuel and fuelAmount > 0 then
@@ -2529,7 +2567,7 @@ end
 					device.lastFuelLogTime[i] = device.lastFuelLogTime[i] or 0
 					local currentTime = os.clock()
 
-					if currentTime - device.lastFuelLogTime[i] > 1.0 then -- Limit to once per second per cylinder
+					if currentTime - device.lastFuelLogTime[i] > 5.0 then -- Limit to once per second per cylinder
 						print(string.format(
 							"[FUEL] Cyl %d: Adding %.6f (total: %.6f) at pos %.2f, RPM: %.1f, Throttle: %.2f, State: %s, Temp: %.2f (%.1fs)",
 							i,
@@ -2538,7 +2576,7 @@ end
 							device.cyclePosition,
 							math.abs(device.outputAV1) * (30 / math.pi), -- Convert rad/s to RPM
 							throttle,
-							isCranking and "CRANKING" or (isRunning and "RUNNING" or "STARTING"),
+							isCranking and "CRANKING" or (isRunning and "RUNNING" or "STALLED"),
 							engineTempC,
 							currentTime
 						))
@@ -2600,7 +2638,7 @@ end
 				device.knockLevel = (device.knockLevel or 0) + 0.2
 				if device.knockLevel > 1.0 then
 					-- Severe knock - reduce power
-					torque = torque * 1.1
+					torque = torque * 0.9
 				end
 			end
 		end
@@ -2610,7 +2648,7 @@ end
 			-- Enhanced misfire effects with temperature-dependent severity
 			if cylinder.fuelAmount > minFuelForCombustion * 0.8 then -- Slightly more forgiving fuel threshold
 				-- Much stronger temperature-based severity - peaks at -20°C and below
-				local tempSeverity = math.min(1.0, math.max(0, (20 - engineTempC) / 20))
+				local tempSeverity = math.min(1.0, math.max(0, (120 - engineTempC) / 20))
 
 				-- Base torque reduction (30-80% of starter torque)
 				local baseReduction = 0.3 + (tempSeverity * 0.8)
@@ -2620,14 +2658,19 @@ end
 				local misfireTorque = -device.starterTorque * baseReduction * randomFactor
 
 				-- Stronger oscillation based on temperature and RPM
-				local rpmFactor = math.min(1.0, math.abs(device.outputAV1) / (device.idleAV * 0.5))
-				local oscillation = math.sin(device.cyclePosition * (cylinderCount / 2))
-					* (0.3 + (tempSeverity * 0.7)) -- More oscillation when cold
-					* (1.0 - (rpmFactor * 0.8)) -- Less oscillation at higher RPM
-					* device.starterTorque
+				--[[local rpmFactor = math.min(1.0, math.abs(device.outputAV1) /
+                                               (device.idleAV * 0.5)) -- local oscillation = math.sin(device.cyclePosition * (cylinderCount / 2))
+                * (0.3 + (tempSeverity * 0.7)) -- More oscillation when cold
+                * (1.0 - (rpmFactor * 0.8)) -- Less oscillation at higher RPM
+                * device.starterTorque *
+                                      min(
+                                          max(
+                                              1 - engineAV *
+                                                  device.invStarterMaxAV, -0.5),
+                                          1)]]
 
 				-- Apply the misfire torque with stronger oscillation
-				local effectiveMisfireTorque = misfireTorque + oscillation
+				local effectiveMisfireTorque = misfireTorque -- + oscillation
 				torque = torque + device.starterTorque + effectiveMisfireTorque * 2
 				-- More aggressive flood level increase when cold
 				if engineTempC < 20 then -- Increased from 10 to 20°C threshold
@@ -2642,7 +2685,7 @@ end
 						device.lastFloodIncLogTime[i] = device.lastFloodIncLogTime[i] or 0
 						local currentTime = os.clock()
 
-						if currentTime - device.lastFloodIncLogTime[i] > 0.5 then -- Limit to twice per second per cylinder
+						if currentTime - device.lastFloodIncLogTime[i] > 5.0 then -- Limit to twice per second per cylinder
 							print(
 								string.format(
 									"[FLOOD] Cyl %d: Level %.3f (+%.3f), Misfires: %d (%.1fs)",
@@ -2698,28 +2741,38 @@ end
 					fuelSputterChance = (0.6 - device.fuelPressureMultiplier) * 0.9
 				end
 
-				-- Determine final torque contribution for this cylinder
+				-- Calculate this cylinder's actual torque contribution (subtractive-from-share model)
+				-- unitTorque is the ideal torque this cylinder would produce at 100% efficiency
+				-- We subtract the difference between ideal and actual to get the net effect
 				local finalCylinderTorque = 0
+				local torqueAdjustment = 0
 				if cylinder.failMode == "dead" or math.random() < fuelSputterChance then
-					-- No power from this cylinder
+					-- No power from this cylinder — remove its entire share
 					finalCylinderTorque = 0
+					torqueAdjustment = unitTorque
 					if fuelSputterChance > 0 and math.random() < 0.1 then
-						-- Add randomized vibration during sputtering by subtraction
+						-- Add randomized vibration during sputtering
 						torque = torque - (math.random() * 150 * (1 - device.fuelPressureMultiplier))
 					end
-					-- Since this cylinder didn't provide its share, we subtract it from the global 'torque'
-					-- BUT, only if the global 'torque' was already calculated from the curve.
-					-- In our plan, we should have initialized torque=0 and built it up.
-					-- To avoid breaking too much legacy code, we will subtract the 'unitShare' here.
-					torque = torque - (baseCombustionTorque / cylinderCount)
 				elseif cylinder.failMode == "leak" then
 					-- Half power due to compression loss
 					finalCylinderTorque = unitTorque * 0.5
-					torque = torque - (baseCombustionTorque / cylinderCount) * 0.5
+					torqueAdjustment = unitTorque * 0.5
 				elseif cylinder.failMode == "broken" then
-					-- Heavy drag from broken internals
-					torque = torque - (baseCombustionTorque / cylinderCount) - 300
+					-- Heavy drag from broken internals (extra drag beyond removing share)
+					finalCylinderTorque = -unitTorque * 2
+					torqueAdjustment = unitTorque * 3
+				else
+					-- Healthy cylinder: full power with efficiency scaling
+					finalCylinderTorque = unitTorque * (0.5 + (combustionEfficiency or 1.0) * 0.5)
+					torqueAdjustment = unitTorque - finalCylinderTorque
 				end
+
+				-- Apply the torque adjustment: subtract the difference between ideal and actual
+				-- When healthy at 100% efficiency: adjustment = 0 (full power)
+				-- When dead: adjustment = unitTorque (removes its share)
+				-- When broken: adjustment = unitTorque * 3 (removes share + 2x drag)
+				torque = torque - torqueAdjustment
 
 				-- Consume fuel and air
 				local fuelConsumption = isCranking and 0.2 or 0.1
@@ -2826,11 +2879,11 @@ end
 				end
 
 				-- Clear some fuel on misfire and add visual/audio feedback
-				if cylinder.fuelAmount > 0.05 then
-					cylinder.fuelAmount = cylinder.fuelAmount * 0.7 -- Clear more fuel to help recover
+				if isCranking and cylinder.fuelAmount > 0.9 and throttle > 0.8 then
+					cylinder.fuelAmount = cylinder.fuelAmount - 0.04 -- Clear more fuel to help recover
 
 					-- Trigger a backfire effect occasionally
-					if math.random() < 0.3 and not isCranking then -- 30% chance of backfire when running
+					if math.random() < 0.3 then -- 30% chance of backfire when running
 						-- Play backfire sound
 						if device.engineMiscSounds and device.engineMiscSounds.starterSoundEngine then
 							local soundName = "event:>Engine>Backfire>Backfire_" .. math.random(1, 3)
@@ -2856,6 +2909,7 @@ end
 	end
 
 	-- Calculate stroke position (0-1) across the full cycle
+	-- (Cylinder torque contributions are applied per-cylinder within the loop above)
 	local strokePos = device.cyclePosition / (4 * math.pi)
 
 	-- Calculate stroke effect
@@ -2869,6 +2923,10 @@ end
 	-- Calculate RPM for effect scaling (clamped to reasonable range)
 	local rpm = math.abs(device.outputAV1) * avToRPM
 	local rpmFactor = math.min(1, rpm / 1000) -- 1.0 at 1000 RPM, tapers off above
+
+	-- Stronger effect at lower RPMs, tapers off as RPM increases
+	local compressionStrength = 1.8 * (1 - rpmFactor * 0.8) -- 1.5x at 0 RPM, 0.3x at 1000 RPM
+	local powerStrength = 3.0 * (1 - rpmFactor * 0.8) -- 2.0x at 0 RPM, 0.2x at 1000 RPM
 
 	-- Calculate ignition error chances based on RPM and engine state
 	local isDiesel = device.requiredEnergyType == "diesel"
@@ -2971,7 +3029,7 @@ end
 
 	-- Smooth the transition between strokes
 	device.lastModifiedTorque = device.lastModifiedTorque or baseStarterTorque
-	baseStarterTorque = device.lastModifiedTorque + (modifiedTorque - device.lastModifiedTorque) * 0.2 -- 20% smoothing
+	baseStarterTorque = device.lastModifiedTorque + (modifiedTorque - device.lastModifiedTorque) * 1.2 -- 20% smoothing
 	device.lastModifiedTorque = baseStarterTorque
 
 	if device.isMisfiring then
@@ -2981,23 +3039,23 @@ end
 		local tempFactor = math.max(0, (20 - engineTempC) / 40) -- 0 at 20°C, 0.5 at 0°C, 1.0 at -20°C
 		local timeDilation = 1.0 + (tempFactor * 2.0) -- 1x to 3x longer duration when cold
 
-		if device.misfireTimer <= 0 then
+		--[[if device.misfireTimer <= 0 then
 			device.isMisfiring = false
 			device.misfireTorque = 0
 		else
-			-- Make the torque reduction pulse slightly for more noticeable effect
-			local pulse = 1.0 + (math.sin(device.misfireTimer * 20) * 0.3) -- 0.7x to 1.3x pulsing
+			--Make the torque reduction pulse slightly for more noticeable effect
+			local pulse = 1.0 + (math.sin(device.misfireTimer * 20) * 0.3) --0.7x to 1.3x pulsing
 			baseStarterTorque = baseStarterTorque - (device.misfireTorque * pulse)
 
-			-- Add some random variation to make it feel more mechanical
-			if math.random() < 0.1 then -- 10% chance per update to add a small random kick
+			--Add some random variation to make it feel more mechanical
+			if math.random() < 0.1 then --10% chance per update to add a small random kick
 				baseStarterTorque = baseStarterTorque + ((math.random() - 0.5) * device.starterTorque * 0.2)
 			end
-		end
+		end]]
 	end
 
 	-- Initialize or update engine coast down state
-	if device.starterEngagedCoef == 0 and (device.lastStarterEngagedCoef or 0) == 1 then
+	if device.starterEngagedCoef == 0 and device.starterEngagedCoef ~= 1 then
 		device.coastDownRPM = device.outputAV1 * avToRPM
 		device.coastDownTime = 0
 	end
@@ -3041,16 +3099,6 @@ end
 			device.misfireActive = true
 			device.lastMisfireTime = currentTime
 
-			-- Show misfire message to player (throttled)
-			if (device.lastMisfireDebugTime or 0) + 0.5 < currentTime then
-				local severity = math.floor(floodLevel * 10) / 10 -- Round to 1 decimal
-				guihooks.trigger("Message", {
-					string.format("MISFIRE! (Severity: %.1f/1.0)", severity),
-					1,
-				})
-				device.lastMisfireDebugTime = currentTime
-			end
-
 			-- More severe torque reduction based on flood level
 			local misfireSeverity = floodLevel * 1.2 -- More aggressive scaling
 			local torqueReduction = math.max(0.1, 1.0 - (misfireSeverity * 0.9)) -- Up to 90% power loss
@@ -3069,18 +3117,6 @@ end
 			if math.random() < 0.3 then -- 30% chance for an extra strong jolt
 				torque = torque + ((math.random() - 0.5) * device.maxTorque * 0.4)
 			end
-
-			-- Debug: Log misfire details
-			log(
-				"I",
-				"combustionEngine.misfire",
-				string.format(
-					"Misfire! Amount: %.2f, Torque: %.1f -> %.1f",
-					misfireAmount,
-					torque / torqueReduction,
-					torque
-				)
-			)
 
 			-- Add backfire effect when misfire is significant
 			if misfireAmount < 0.85 then -- More likely to get backfires
@@ -3227,7 +3263,6 @@ end
 local function selectUpdates(device)
 	device.velocityUpdate = nop
 	device.torqueUpdate = updateTorque
-	device.updateGFX = updateGFX
 end
 
 local function applyDeformGroupDamage(device, damageAmount, groupType)
@@ -3289,7 +3324,7 @@ local function setPartCondition(device, subSystem, odometer, integrity, visual)
 	elseif subSystem == "turbocharger" then
 		device.turbocharger.setPartCondition(odometer, integrity, visual)
 		-- elseif subSystem == "supercharger" then
-		--   device.supercharger.setPartCondition(odometer, integrity, visual)
+		-- device.supercharger.setPartCondition(odometer, integrity, visual)
 	end
 end
 
@@ -3334,9 +3369,9 @@ local function getPartCondition(device, subSystem)
 	elseif subSystem == "turbocharger" then
 		local integrityValue, integrityState = device.turbocharger.getPartCondition()
 		return integrityValue, integrityState
-	elseif subSystem == "supercharger" then
-		local integrityValue, integrityState = device.supercharger.getPartCondition()
-		return integrityValue, integrityState
+		-- elseif subSystem == "supercharger" then
+		-- local integrityValue, integrityState = device.supercharger.getPartCondition()
+		-- return integrityValue, integrityState
 	end
 end
 
@@ -3422,12 +3457,13 @@ local function activateStarter(device)
 			damageTracker.setDamage("engine", "engineDisabled", false)
 			-- damageTracker.setDamage("engine", "EngineTooColdToStart", true)
 			gui.message(
-				"Engine too cold to start!\n"
+				"Engine is very cold!\n"
 					.. "Engine block temperature: "
 					.. engineTempC
 					.. "°C\n"
 					.. "You can try to start the engine\n"
-					.. "But I doubt it will work"
+					.. "But I doubt it will work\n"
+					.. "Or it could take a few tries"
 			)
 		elseif engineTempC < 260 and engineTempC > -60 and device.hasFuel then -- Changed from -45°C - 15°C to < 260°C - >-268°C for more realistic warm-up and added realism to the engine starting process
 			-- Engine is cold/warm
@@ -3435,26 +3471,26 @@ local function activateStarter(device)
 
 			-- Calculate cranking time based on temperature
 			-- Warmer engines get shorter cranking times, but not instant
-			local tempFactor = linearScale(engineTempC, -270, 260, 4.0, 0.2) -- Scale from -30°C to 60°C
+			--[[local tempFactor = linearScale(engineTempC, -270, 45, 8.0, 0) --Scale from -30°C to 60°C
 			local crankingTime = minCrankingTime + (maxCrankingTime - minCrankingTime) * tempFactor
 
-			-- Set the cranking timer
+			--Set the cranking timer
 			device.starterThrottleKillTimer = crankingTime
 
-			-- Adjust ignition errors based on temperature (less severe when warm)
-			local errorFactor = linearScale(engineTempC, -270, 60, 4.0, 0.1)
-			device.starterIgnitionErrorTimer = linearScale(engineTempC, -270, 60, 2.8, 0.2)
-			device.starterIgnitionErrorChance = linearScale(engineTempC, -270, 60, 0.7, 0.05) * errorFactor
-			device.starterIgnitionErrorCoef = linearScale(engineTempC, -270, 60, 0.8, 0.1) * errorFactor
+			--Adjust ignition errors based on temperature (less severe when warm)
+			local errorFactor = linearScale(engineTempC, -270, 45, 40.0, 0)
+			device.starterIgnitionErrorTimer = linearScale(engineTempC, -270, 45, 48.8, 0)
+			device.starterIgnitionErrorChance = linearScale(engineTempC, -270, 45, 92.7, 0) * errorFactor
+			device.starterIgnitionErrorCoef = linearScale(engineTempC, -270, 45, 2.8, 0) * errorFactor
 
-			-- Adjust idle RPM fluctuations (less when warm)
-			device.idleAVReadError = linearScale(engineTempC, -270, 60, 0.3, 0.05)
-			device.idleAVReadErrorChance = linearScale(engineTempC, -270, 60, 0.6, 0.1)
-			device.idleAVReadErrorCoef = linearScale(engineTempC, -270, 60, 0.6, 0.1)
+			--Adjust idle RPM fluctuations (less when warm)
+			device.idleAVReadError = linearScale(engineTempC, -270, 45, 4.5, 0)
+			device.idleAVReadErrorChance = linearScale(engineTempC, -270, 45, 4.5, 0)
+			device.idleAVReadErrorCoef = linearScale(engineTempC, -270, 45, 4.5, 0)]]
 		else
 			-- Engine is hot (above 60°C) - minimal cranking time but not instant
 			damageTracker.setDamage("engine", "engineDisabled", false)
-			device.starterThrottleKillTimer = minCrankingTime * 1.8 -- Slightly faster than minimum for hot engines
+			-- device.starterThrottleKillTimer = minCrankingTime * 1.8 --Slightly faster than minimum for hot engines
 
 			-- Minimal ignition errors when hot
 			device.starterIgnitionErrorTimer = 0.1
@@ -3486,14 +3522,18 @@ end
 
 local function deactivateStarter(device)
 	-- if we happen to crank barely long enough, then do allow the engine to start up, otherwise, we stay with the throttle kill coef as is (usually at 0)
-	local didStart = false
+	local crankedLongEnough = false
 	if device.starterThrottleKillTimer <= 0 then
 		device.starterThrottleKillCoef = 1
-		didStart = true
+		crankedLongEnough = true
 	end
 	device.starterThrottleKillTimer = 0
 	device.starterEngagedCoef = 0
-	if didStart then
+	local didStartEngine = false
+	if device.outputAV1 > device.starterMaxAV * 1.1 then
+		didStartEngine = true
+	end
+	if crankedLongEnough and didStartEngine then
 		obj:stopSFX(device.engineMiscSounds.starterSoundEngine)
 		if device.engineMiscSounds.starterSoundExhaust then
 			obj:stopSFX(device.engineMiscSounds.starterSoundExhaust)
@@ -3669,6 +3709,9 @@ end
 -- this does not update aggregate parameters like main_gain or _muffled, use the list API for these
 -- it also does not update starter sound params
 local function setEngineSoundParameter(device, soundID, paramName, paramValue, reference)
+	if not device.soundConfiguration then
+		return
+	end
 	device.soundConfiguration[reference] = device.soundConfiguration[reference] or {}
 	device.soundConfiguration[reference].params = device.soundConfiguration[reference].params or {}
 	device.soundConfiguration[reference].soundID = soundID
@@ -3743,7 +3786,8 @@ local function exhaustEndNodesChanged(device, endNodes)
 			endNodeIDPairs = {}
 			for _, v in pairs(endNodes) do
 				maxExhaustAudioOpennessCoef = min(max(maxExhaustAudioOpennessCoef, v.exhaustAudioOpennessCoef), 1)
-				maxExhaustAudioGain = maxExhaustAudioGain and max(maxExhaustAudioGain, v.exhaustAudioGainChange)
+				maxExhaustAudioGain = maxExhaustAudioGain
+						and max(maxExhaustAudioGain, v.exhaustAudioGainChange)
 					or v.exhaustAudioGainChange
 				table.insert(endNodeIDPairs, { v.start, v.finish })
 			end
@@ -3833,7 +3877,8 @@ local function resetSounds(device, jbeamData)
 					for _, v in pairs(device.thermals.exhaustEndNodes) do
 						maxExhaustAudioOpennessCoef =
 							min(max(maxExhaustAudioOpennessCoef, v.exhaustAudioOpennessCoef), 1)
-						maxExhaustAudioGain = maxExhaustAudioGain and max(maxExhaustAudioGain, v.exhaustAudioGainChange)
+						maxExhaustAudioGain = maxExhaustAudioGain
+								and max(maxExhaustAudioGain, v.exhaustAudioGainChange)
 							or v.exhaustAudioGainChange
 						table.insert(endNodeIDPairs, { v.start, v.finish })
 					end
@@ -4170,6 +4215,11 @@ local function initSounds(device, jbeamData)
 
 					local intakeMuffling = soundConfig.intakeMuffling or 1
 
+					-- Audio Debug (engine)
+					-- print (string.format("       ENGINE idleRPM = %4.0f / maxRPM = %5.0f", jbeamData.idleRPM, jbeamData.maxRPM))
+					-- print (string.format("       ENGINE idleRPM = %4.0f / limiterRPM = %5.0f / maxRPM = %5.0f", jbeamData.idleRPM, jbeamData.revLimiterRPM, jbeamData.maxRPM))
+					-- print (string.format("%s  / maingain %4.2fdB / Muffling %.2f / onLoadGain %.2f / offLoadGain %.2f / lowShelf %.0f %4.2fdB / highShelf %4.0f %.2fdB / eqLow %.0f %.2fdB/ eqHigh %4.0f %.2fdB / eqFundamental %.2fdB", sampleName, main_gain, intakeMuffling, onLoadGain, offLoadGain, eq_a_freq, eq_a_gain, eq_b_freq, eq_b_gain, eq_c_freq, eq_c_gain, eq_d_freq, eq_d_gain, eq_e_gain))
+
 					local params = {
 						base_gain = main_gain,
 						main_gain = 0,
@@ -4196,7 +4246,9 @@ local function initSounds(device, jbeamData)
 						c_enginePlacement = c_enginePlacement,
 						compression_brake_coef = 0,
 					}
+					-- dump(params)
 					device:setEngineSoundParameterList(device.engineSoundID, params, "engine")
+					-- dump(sounds)
 					hasNewSounds = true
 				else
 					log("E", "combustionEngine.initSounds", "Missing sampleName in soundConfig")
@@ -4239,7 +4291,9 @@ local function initSounds(device, jbeamData)
 							table.insert(endNodeIDPairs, { v.start, v.finish })
 						end
 					else
-						endNodeIDPairs = { { device.engineNodeID, device.engineNodeID } }
+						endNodeIDPairs = {
+							{ device.engineNodeID, device.engineNodeID },
+						}
 						maxExhaustAudioGain = 0
 					end
 					device:initExhaustSound(
@@ -4269,6 +4323,9 @@ local function initSounds(device, jbeamData)
 					local exhaustMuffling = device.exhaustAudioMufflingMinCoef
 						+ device.exhaustAudioMufflingCoefRange * (1 - maxExhaustAudioOpennessCoef)
 
+					-- Audio Debug (exhaust)
+					-- print (string.format("%s / maingain %4.2fdB / Muffling %.2f / onLoadGain %.2f / offLoadGain %.2f / lowShelf %.0fhz %4.2fdB / highShelf %4.0fhz %.2fdB / eqLow %.0fhz %.2fdB/ eqHigh %4.0fhz %.2fdB / eqFundamental %.2fdB ",sampleName, main_gain, exhaustMuffling, onLoadGain, offLoadGain, eq_a_freq, eq_a_gain, eq_b_freq, eq_b_gain, eq_c_freq, eq_c_gain, eq_d_freq, eq_d_gain, eq_e_gain))
+
 					local params = {
 						base_gain = main_gain,
 						main_gain = 0,
@@ -4294,6 +4351,8 @@ local function initSounds(device, jbeamData)
 						triggerAntilag = 0,
 						fundamentalFrequencyRPMCoef = fundamentalFrequencyCylinderCount / 120,
 					}
+					-- dump(params)
+
 					device:setEngineSoundParameterList(device.engineSoundIDExhaust, params, "exhaust")
 					hasNewSounds = true
 				else
@@ -4488,13 +4547,13 @@ local function new(jbeamData)
 		maxRPM = jbeamData.maxRPM,
 		maxAV = jbeamData.maxRPM * rpmToAV,
 		inertia = jbeamData.inertia or 0.1,
-		starterTorque = jbeamData.starterTorque or (jbeamData.friction * 25),
+		starterTorque = jbeamData.starterTorque or (jbeamData.friction * 20),
 		starterMaxAV = (jbeamData.starterMaxRPM or jbeamData.idleRPM * 0.7) * rpmToAV,
 		starterTorqueMultiplier = jbeamData.starterTorqueMultiplier or 3,
 		shutOffSoundRequested = false,
 		starterEngagedCoef = 0,
 		starterThrottleKillCoef = 1,
-		starterThrottleKillCoefSmoother = newTemporalSmoothing(70, 40),
+		starterThrottleKillCoefSmoother = newTemporalSmoothing(20, 10),
 		starterThrottleKillTimer = 0,
 		starterThrottleKillTimerStart = 0,
 		starterThrottleKillTime = jbeamData.starterThrottleKillTime or 0.5,
@@ -4569,14 +4628,18 @@ local function new(jbeamData)
 		soundLocations = {},
 		stallBuzzerSample = jbeamData.stallBuzzerSample or "lua/vehicle/powertrain/stall_buzzer.wav", -- Default path adjusted
 		stallBuzzerVolume = jbeamData.stallBuzzerVolume or 0.3, -- also tied to "OTHER" volume slider in options
-		stallBuzzerCrankingPitch = jbeamData.stallBuzzerCrankingPitch or 0.3,
+		stallBuzzerCrankingPitch = jbeamData.stallBuzzerCrankingPitch or 0.7,
 		stallBuzzerSoundID = nil,
 		-- Glow plug system
 		glowPlug = {
 			heat = 0, -- 0 to 1
 			state = "off", -- off, preheat, assist, postheat
 			preheatTimer = 0, -- Timer for preheat phase
-			maxAmps = 80, -- Current draw at max heat
+			maxAmps = jbeamData.glowPlugMaxAmps or 0.60, -- Peak current draw at max heat during preheat
+			preheatLoadCoef = jbeamData.glowPlugPreheatLoadCoef or 1.0,
+			assistLoadCoef = jbeamData.glowPlugAssistLoadCoef or 0.35,
+			postheatLoadCoef = jbeamData.glowPlugPostheatLoadCoef or 0.2,
+			loadScale = jbeamData.glowPlugLoadScale or 1.0,
 			debug = false, -- Global debug toggle for this engine
 		},
 		--
@@ -4833,8 +4896,11 @@ local function new(jbeamData)
 	device.fundamentalFrequencyCylinderCount = jbeamData.fundamentalFrequencyCylinderCount
 		or jbeamData.cylinderCount
 		or (jbeamData.soundConfig and v.data[jbeamData.soundConfig] and v.data[jbeamData.soundConfig].fundamentalFrequencyCylinderCount)
-		or (jbeamData.soundConfigExhaust and v.data[jbeamData.soundConfigExhaust] and v.data[jbeamData.soundConfigExhaust].fundamentalFrequencyCylinderCount)
-		or 6
+		or (
+			jbeamData.soundConfigExhaust
+			and v.data[jbeamData.soundConfigExhaust]
+			and v.data[jbeamData.soundConfigExhaust].fundamentalFrequencyCylinderCount
+		)
 	device.cyclePosition = 0
 	-- fast
 	device.fastIgnitionErrorSmoother = newTemporalSmoothing(10, 10)
@@ -4882,7 +4948,8 @@ local function new(jbeamData)
 		device.visualPosition = { x = avgPos.x, y = avgPos.y, z = avgPos.z }
 	end
 
-	device.engineNodeID = device.torqueReactionNodes and (device.torqueReactionNodes[1] or v.data.refNodes[0].ref)
+	device.engineNodeID = device.torqueReactionNodes
+			and (device.torqueReactionNodes[1] or v.data.refNodes[0].ref)
 		or v.data.refNodes[0].ref
 	if device.engineNodeID < 0 then
 		log("W", "combustionEngine.init", "Can't find suitable engine node, using ref node instead!")
@@ -4985,7 +5052,7 @@ local function new(jbeamData)
 	damageTracker.setDamage("engine", "impactDamage", false)
 
 	-- Initialize individual cylinder states for failure simulation
-	local cylinderCount = device.fundamentalFrequencyCylinderCount or jbeamData.cylinderCount or 8
+	local cylinderCount = device.fundamentalFrequencyCylinderCount or jbeamData.fundamentalFrequencyCylinderCount or 12
 	device.cylinders = {}
 	for i = 1, cylinderCount do
 		device.cylinders[i] = {
@@ -4997,8 +5064,10 @@ local function new(jbeamData)
 			failMode = "none", -- "none", "dead", "leak", "broken"
 			failAirScale = 1.0, -- Default full compression
 			misfireCount = 0,
-			lastFired = -1,
-			compressionRatio = jbeamData.compressionRatio or 10,
+			lastFired = 0,
+			lastFuelAddTime = 0,
+			compressionRatio = jbeamData.compressionRatio or 7,
+			floodLevel = 0, -- Per-cylinder flood level (0-1)
 		}
 	end
 
@@ -5010,9 +5079,6 @@ end
 M.new = new
 
 local command =
-	"obj:queueGameEngineLua(string.format('scenarios.getScenario().wheelDataCallback(%s)', serialize({wheels.wheels[0].absActive, wheels.wheels[0].angularVelocity, wheels.wheels[0].angularVelocityBrakeCouple})))"
-
--- Call the initialization
-onModuleLoad()
+	"obj:queueGameEngineLua(string.format('scenarios.getScenario().wheelDataCallback(%s)', serialize({wheels.wheels[0].absActive, wheels.wheels[0].angularVelocity, wheels.wheels[0].angularVelocityBrakeCouple}))"
 
 return M
