@@ -23,7 +23,7 @@ local torqueDebug = false
 local hesitationDebug = false
 local starterDebug = false
 local debugBatt = false
-local debugFuel = true
+local debugFuel = false
 
 M.outputPorts = { [1] = true } --set dynamically
 M.deviceCategories = { engine = true }
